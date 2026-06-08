@@ -312,10 +312,16 @@ async function enrichEmailsWithThreadData(
   emails: Email[],
   accountId?: string
 ): Promise<Email[]> {
+  function sortByReceivedAtDesc(list: Email[]): Email[] {
+    return [...list].sort(
+      (a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()
+    );
+  }
+
   if (emails.length === 0) return emails;
 
   const threadIds = [...new Set(emails.map(e => e.threadId).filter(Boolean))];
-  if (threadIds.length === 0) return emails;
+  if (threadIds.length === 0) return sortByReceivedAtDesc(emails);
 
   try {
     const threadPromises = threadIds.map(tid => client.getThread(tid, accountId));
@@ -327,10 +333,7 @@ async function enrichEmailsWithThreadData(
         .flatMap(t => t.emailIds)
     )];
 
-    if (allEmailIds.length <= emails.length) return emails;
-
     const threadEmails = await client.getEmailsByIds(allEmailIds, accountId);
-    if (threadEmails.length <= emails.length) return emails;
 
     const seenIds = new Set(emails.map(e => e.id));
     const enriched: Email[] = [...emails];
@@ -342,14 +345,10 @@ async function enrichEmailsWithThreadData(
       }
     }
 
-    enriched.sort(
-      (a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()
-    );
-
-    return enriched;
+    return sortByReceivedAtDesc(enriched);
   } catch (error) {
     console.error('Failed to enrich emails with thread data:', error);
-    return emails;
+    return sortByReceivedAtDesc(emails);
   }
 }
 
@@ -2176,7 +2175,11 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       if (!accountChanges) return;
 
       // Handle Email state changes - refresh current mailbox
-      if (accountChanges.Email) {
+      // Also handle EmailDelivery since some JMAP servers send that type
+      // for incoming mail without including an Email state change.
+      // Handle Thread changes since replies to existing conversations update
+      // the Thread state hash (emailIds list grows) independently of Email.
+      if (accountChanges.Email || accountChanges.EmailDelivery || accountChanges.Thread) {
         await get().refreshCurrentMailbox(client);
         get().fetchTagCounts(client);
       }
@@ -2266,7 +2269,6 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       }
 
       const currentEmails = get().emails;
-      const previousTotal = get().totalEmails;
 
       // Only notify for genuinely new incoming mail in the Inbox.
       // Without these guards the toast/sound also fires when sending,
@@ -2306,29 +2308,50 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
         ? await enrichEmailsWithThreadData(effectiveClient, merged, accountId)
         : merged;
 
-      // Check if anything actually changed to avoid unnecessary re-renders
-      const hasChanged =
-        currentEmails.length !== enriched.length ||
-        enriched.some((email, i) => {
-          const curr = currentEmails[i];
-          if (!curr) return true;
-          return (
-            curr.id !== email.id ||
-            curr.threadId !== email.threadId ||
-            JSON.stringify(curr.keywords) !== JSON.stringify(email.keywords)
-          );
-        });
+      // Always apply the refreshed data when a state change fired to ensure
+      // thread-level changes (new reply in an existing conversation, etc.) are
+      // reflected even when the flattened email array indices happen to match.
+      const hasMore = merged.length < (result.total || 0);
 
-      if (hasChanged) {
-        // hasMore should reflect whether there are still more emails beyond
-        // what we have loaded, using the fresh total from the server.
-        const hasMore = merged.length < (result.total || 0);
-        set({
-          emails: enriched,
-          hasMoreEmails: hasMore,
-          totalEmails: result.total,
-        });
+      // Batch the main state update and any thread-cache sync into a single
+      // set() to avoid an intermediate render where the expanded view sees stale
+      // cached emails alongside the new enriched emails array.
+      const setPatch: Record<string, unknown> = {
+        emails: enriched,
+        hasMoreEmails: hasMore,
+        totalEmails: result.total,
+      };
+
+      // Sync threadEmailsCache so previously-expanded threads show the complete
+      // set of sub-emails (including the new reply) without a re-fetch.
+      const currentCache = get().threadEmailsCache;
+      if (currentCache.size > 0) {
+        const enrichedByThread = new Map<string, Email[]>();
+        for (const e of enriched) {
+          const tid = e.threadId || '__no_thread';
+          if (!enrichedByThread.has(tid)) enrichedByThread.set(tid, []);
+          enrichedByThread.get(tid)!.push(e);
+        }
+        const newCache = new Map(currentCache);
+        let cacheDirty = false;
+        for (const [tid, cached] of newCache) {
+          const enrichedList = enrichedByThread.get(tid);
+          if (!enrichedList) continue;
+          const cachedIds = new Set(cached.map(e => e.id));
+          const newFromEnrich = enrichedList.filter(e => !cachedIds.has(e.id));
+          if (newFromEnrich.length > 0) {
+            newCache.set(tid,
+              [...cached, ...newFromEnrich].sort(
+                (a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()
+              )
+            );
+            cacheDirty = true;
+          }
+        }
+        if (cacheDirty) setPatch.threadEmailsCache = newCache;
       }
+
+      set(setPatch as Partial<EmailStore>);
     } catch (error) {
       console.error('Failed to refresh current mailbox:', error);
       // Don't set error state for background refreshes to avoid disrupting the UI
