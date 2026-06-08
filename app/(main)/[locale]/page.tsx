@@ -1165,6 +1165,22 @@ export default function Home() {
 
       // Refresh the current mailbox to update the UI
       if (!isScheduledView) await fetchEmails(client, selectedMailbox);
+
+      // Ensure the sent email appears in the conversation grouping even if the
+      // server assigned it a different threadId. Fetch it and inject it into
+      // the emails array with the original email's threadId so it groups with
+      // the conversation in the current folder.
+      if (result.emailId && originalEmailId && selectedEmail?.threadId) {
+        try {
+          const [sentEmail] = await client.getEmailsByIds([result.emailId]);
+          if (sentEmail) {
+            sentEmail.threadId = selectedEmail.threadId;
+            useEmailStore.getState().injectEmailIntoList(sentEmail);
+          }
+        } catch (e) {
+          debug.error('Failed to inject sent email into conversation grouping:', e);
+        }
+      }
     } catch (error) {
       console.error("Failed to send email:", error);
     }

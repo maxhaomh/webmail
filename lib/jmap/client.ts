@@ -1110,6 +1110,35 @@ export class JMAPClient implements IJMAPClient {
     }
   }
 
+  async getEmailsByIds(emailIds: string[], accountId?: string): Promise<Email[]> {
+    try {
+      const targetAccountId = accountId || this.accountId;
+
+      const response = await this.request([
+        ["Email/get", {
+          accountId: targetAccountId,
+          ids: emailIds,
+          properties: [...EMAIL_LIST_PROPERTIES],
+        }, "0"],
+      ]);
+
+      if (response.methodResponses?.[0]?.[0] === "Email/get") {
+        const emails = response.methodResponses[0][1].list || [];
+
+        if (accountId && accountId !== this.accountId) {
+          namespaceMailboxIds(emails, accountId);
+        }
+
+        return emails;
+      }
+
+      return [];
+    } catch (error) {
+      console.error('Failed to get emails by ids:', error);
+      return [];
+    }
+  }
+
   private async parseEmailHeaders(email: Email): Promise<void> {
     const { parseAuthenticationResults, parseSpamScore, parseSpamLLM } = await import('@/lib/email-headers');
 
