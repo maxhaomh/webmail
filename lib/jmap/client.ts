@@ -101,8 +101,6 @@ const EMAIL_LIST_PROPERTIES = [
   "hasAttachment",
   // Needed so list rows can serve drag-out to the file system as .eml.
   "blobId",
-  // Needed for messageId-based dedup — the server can return separate Email
-  // objects (different JMAP ids) for Sent and Inbox copies of the same message.
   "messageId",
 ] as const;
 
@@ -1871,19 +1869,19 @@ export class JMAPClient implements IJMAPClient {
           namespaceMailboxIds(rawEmails, accountId);
         }
 
-        // Deduplicate by messageId — the server may represent the same
-        // logical message as separate Email objects (e.g. Sent + Inbox
-        // copies) with different JMAP ids but the same Message-ID.
+        // JMAP RFC 8621 §4.1.2.3 specifies messageId as String[]|null, but the
+        // Email type in this codebase types it as string. Handle either shape.
         const seenIds = new Set<string>();
         const seenMessageIds = new Set<string>();
         const emails: Email[] = [];
         for (const email of rawEmails) {
           if (seenIds.has(email.id)) continue;
-          const msgId = email.messageId ? stripMessageIdBrackets(email.messageId) : '';
-          if (msgId && seenMessageIds.has(msgId)) continue;
+          const mid = Array.isArray(email.messageId) ? email.messageId[0] : email.messageId;
+          const normalized = mid ? stripMessageIdBrackets(mid) : '';
+          if (normalized && seenMessageIds.has(normalized)) continue;
           emails.push(email);
           seenIds.add(email.id);
-          if (msgId) seenMessageIds.add(msgId);
+          if (normalized) seenMessageIds.add(normalized);
         }
 
         return emails.sort((a: Email, b: Email) =>
