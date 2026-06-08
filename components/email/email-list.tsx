@@ -277,16 +277,20 @@ export function EmailList({
     };
   }, [lastVirtualItemIndex, threadGroups.length, handleLoadMore]);
 
-  // Scroll to the thread group containing the selected email
+  // Scroll to the thread group containing the selected email.
+  // Avoid scrolling if the item is already rendered in the viewport to prevent
+  // scroll jumps when clicking a conversation that also expands inline.
   useEffect(() => {
     if (!selectedEmailId) return;
     const index = threadGroups.findIndex(thread =>
       thread.latestEmail.id === selectedEmailId ||
       thread.emails.some(e => e.id === selectedEmailId)
     );
-    if (index >= 0) {
-      virtualizer.scrollToIndex(index, { align: 'auto' });
-    }
+    if (index < 0) return;
+    const virtualItems = virtualizer.getVirtualItems();
+    const isRendered = virtualItems.some(vi => vi.index === index);
+    if (isRendered) return;
+    virtualizer.scrollToIndex(index, { align: 'auto' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedEmailId]);
 
