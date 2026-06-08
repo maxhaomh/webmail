@@ -1,4 +1,5 @@
 import type { Email, ThreadGroup } from "./jmap/types";
+import { stripMessageIdBrackets } from "./email-threading";
 
 /**
  * Groups emails by their threadId and creates ThreadGroup objects for UI display.
@@ -105,18 +106,22 @@ export function mergeThreadEmails(
   existingGroup: ThreadGroup,
   fetchedEmails: Email[]
 ): ThreadGroup {
-  // Create a map of existing emails by ID
+  // Create a map of existing emails by ID, plus a set of Message-IDs
   const emailMap = new Map<string, Email>();
+  const seenMessageIds = new Set<string>();
 
   for (const email of existingGroup.emails) {
     emailMap.set(email.id, email);
+    if (email.messageId) seenMessageIds.add(stripMessageIdBrackets(email.messageId));
   }
 
   // Add fetched emails that aren't already in the group
   for (const email of fetchedEmails) {
-    if (!emailMap.has(email.id)) {
-      emailMap.set(email.id, email);
-    }
+    if (emailMap.has(email.id)) continue;
+    const msgId = email.messageId ? stripMessageIdBrackets(email.messageId) : '';
+    if (msgId && seenMessageIds.has(msgId)) continue;
+    emailMap.set(email.id, email);
+    if (msgId) seenMessageIds.add(msgId);
   }
 
   // Convert back to array and sort

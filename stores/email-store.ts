@@ -10,6 +10,7 @@ import type { ExternalSearchResult } from "@/lib/plugin-types";
 import { fetchUnifiedEmails, fetchUnifiedMailboxCounts, searchUnifiedEmails, advancedSearchUnifiedEmails, type UnifiedAccountClient, type UnifiedMailboxCounts } from "@/lib/unified-mailbox";
 import { useAuthStore } from "@/stores/auth-store";
 import { useAccountStore } from "@/stores/account-store";
+import { stripMessageIdBrackets } from "@/lib/email-threading";
 
 type ScheduledSubmissionMetadata = {
   submissionId: string;
@@ -336,13 +337,18 @@ async function enrichEmailsWithThreadData(
     const threadEmails = await client.getEmailsByIds(allEmailIds, accountId);
 
     const seenIds = new Set(emails.map(e => e.id));
+    const seenMessageIds = new Set(
+      emails.map(e => e.messageId ? stripMessageIdBrackets(e.messageId) : '').filter(Boolean)
+    );
     const enriched: Email[] = [...emails];
 
     for (const email of threadEmails) {
-      if (!seenIds.has(email.id)) {
-        enriched.push(email);
-        seenIds.add(email.id);
-      }
+      if (seenIds.has(email.id)) continue;
+      const msgId = email.messageId ? stripMessageIdBrackets(email.messageId) : '';
+      if (msgId && seenMessageIds.has(msgId)) continue;
+      enriched.push(email);
+      seenIds.add(email.id);
+      if (msgId) seenMessageIds.add(msgId);
     }
 
     return sortByReceivedAtDesc(enriched);
@@ -903,7 +909,15 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       // Deduplicate: the server may return overlapping results if new emails
       // arrived between paginated requests and shifted positions.
       const existingIds = new Set(currentEmails.map(e => e.id));
-      const newEmails = annotateScheduledEmails(result.emails, get().scheduledSubmissionByEmailId).filter((e: Email) => !existingIds.has(e.id));
+      const existingMessageIds = new Set(
+        currentEmails.map(e => e.messageId ? stripMessageIdBrackets(e.messageId) : '').filter(Boolean)
+      );
+      const newEmails = annotateScheduledEmails(result.emails, get().scheduledSubmissionByEmailId).filter((e: Email) => {
+        if (existingIds.has(e.id)) return false;
+        const msgId = e.messageId ? stripMessageIdBrackets(e.messageId) : '';
+        if (msgId && existingMessageIds.has(msgId)) return false;
+        return true;
+      });
 
       const merged = [...currentEmails, ...newEmails];
 
@@ -2295,12 +2309,17 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       // those items get lost and the conversation stack breaks.
       const merged: Email[] = [...refreshedEmails];
       const mergedIds = new Set(refreshedEmails.map((e: Email) => e.id));
+      const mergedMessageIds = new Set(
+        refreshedEmails.map(e => e.messageId ? stripMessageIdBrackets(e.messageId) : '').filter(Boolean)
+      );
 
       for (const email of currentEmails) {
-        if (!mergedIds.has(email.id)) {
-          merged.push(email);
-          mergedIds.add(email.id);
-        }
+        if (mergedIds.has(email.id)) continue;
+        const msgId = email.messageId ? stripMessageIdBrackets(email.messageId) : '';
+        if (msgId && mergedMessageIds.has(msgId)) continue;
+        merged.push(email);
+        mergedIds.add(email.id);
+        if (msgId) mergedMessageIds.add(msgId);
       }
 
       // Enrich with thread data so cross-mailbox messages appear in grouping
@@ -2436,6 +2455,11 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
   injectEmailIntoList: (email: Email) => {
     set((state) => {
       if (state.emails.some(e => e.id === email.id)) return state;
+      const emailMessageId = email.messageId ? stripMessageIdBrackets(email.messageId) : '';
+      if (emailMessageId && state.emails.some(e => {
+        const mid = e.messageId ? stripMessageIdBrackets(e.messageId) : '';
+        return mid === emailMessageId;
+      })) return state;
 
       const updated = [...state.emails, email].sort(
         (a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()
@@ -2444,7 +2468,12 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       const newCache = new Map(state.threadEmailsCache);
       const cached = newCache.get(email.threadId);
       if (cached) {
-        if (!cached.some(e => e.id === email.id)) {
+        const alreadyCached = cached.some(e => e.id === email.id)
+          || (!!emailMessageId && cached.some(e => {
+            const mid = e.messageId ? stripMessageIdBrackets(e.messageId) : '';
+            return mid === emailMessageId;
+          }));
+        if (!alreadyCached) {
           newCache.set(email.threadId, [...cached, email]);
         }
       }

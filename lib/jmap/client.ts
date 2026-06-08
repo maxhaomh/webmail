@@ -101,6 +101,9 @@ const EMAIL_LIST_PROPERTIES = [
   "hasAttachment",
   // Needed so list rows can serve drag-out to the file system as .eml.
   "blobId",
+  // Needed for messageId-based dedup — the server can return separate Email
+  // objects (different JMAP ids) for Sent and Inbox copies of the same message.
+  "messageId",
 ] as const;
 
 // Stalwart's default property list for Calendar/get omits shareWith, isVisible,
@@ -1862,10 +1865,25 @@ export class JMAPClient implements IJMAPClient {
       ]);
 
       if (response.methodResponses?.[0]?.[0] === "Email/get") {
-        const emails = response.methodResponses[0][1].list || [];
+        const rawEmails = response.methodResponses[0][1].list || [];
 
         if (accountId && accountId !== this.accountId) {
-          namespaceMailboxIds(emails, accountId);
+          namespaceMailboxIds(rawEmails, accountId);
+        }
+
+        // Deduplicate by messageId — the server may represent the same
+        // logical message as separate Email objects (e.g. Sent + Inbox
+        // copies) with different JMAP ids but the same Message-ID.
+        const seenIds = new Set<string>();
+        const seenMessageIds = new Set<string>();
+        const emails: Email[] = [];
+        for (const email of rawEmails) {
+          if (seenIds.has(email.id)) continue;
+          const msgId = email.messageId ? stripMessageIdBrackets(email.messageId) : '';
+          if (msgId && seenMessageIds.has(msgId)) continue;
+          emails.push(email);
+          seenIds.add(email.id);
+          if (msgId) seenMessageIds.add(msgId);
         }
 
         return emails.sort((a: Email, b: Email) =>
