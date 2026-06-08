@@ -256,7 +256,10 @@ export function EmailComposer({
     if (mode === 'reply') {
       return replyTarget ? replyTarget + ', ' : "";
     } else if (mode === 'replyAll') {
-      const originalTo = replyTo.to?.filter(r => r.email).map(r => r.email).join(", ") || "";
+      const ownEmails = new Set(identities.map(i => i.email?.trim().toLowerCase()).filter(Boolean));
+      const originalTo = replyTo.to
+        ?.filter(r => r.email && !ownEmails.has(r.email.trim().toLowerCase()))
+        .map(r => r.email).join(", ") || "";
       const combined = [replyTarget, originalTo].filter(Boolean).join(", ");
       return combined ? combined + ', ' : "";
     }
@@ -265,7 +268,10 @@ export function EmailComposer({
 
   const getInitialCc = () => {
     if (!replyTo || mode !== 'replyAll') return "";
-    const cc = replyTo.cc?.map(r => r.email).join(", ") || "";
+    const ownEmails = new Set(identities.map(i => i.email?.trim().toLowerCase()).filter(Boolean));
+    const cc = replyTo.cc
+      ?.filter(r => r.email && !ownEmails.has(r.email.trim().toLowerCase()))
+      .map(r => r.email).join(", ") || "";
     return cc ? cc + ', ' : "";
   };
 

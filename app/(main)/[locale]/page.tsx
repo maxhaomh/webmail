@@ -1207,16 +1207,22 @@ export default function Home() {
   ) => {
     if (!email) { setComposerQuoteHeader(null); return; }
     try {
+      const ownEmails = new Set(
+        useIdentityStore.getState().identities
+          .map(i => i.email?.trim().toLowerCase())
+          .filter(Boolean)
+      );
+      const isOwnEmail = (addr: string) => ownEmails.has(addr.trim().toLowerCase());
       const replyTargets = (email.replyTo?.length
         ? email.replyTo
         : email.from ?? []).filter(r => r.email).map(r => r.email!);
       const newTo = mode === 'reply'
         ? replyTargets
         : mode === 'replyAll'
-          ? [...replyTargets, ...(email.to ?? []).filter(r => r.email).map(r => r.email!)]
+          ? [...replyTargets, ...(email.to ?? []).filter(r => r.email && !isOwnEmail(r.email!)).map(r => r.email!)]
           : [];
       const newCc = mode === 'replyAll'
-        ? (email.cc ?? []).filter(r => r.email).map(r => r.email!)
+        ? (email.cc ?? []).filter(r => r.email && !isOwnEmail(r.email!)).map(r => r.email!)
         : [];
       const header = await buildQuoteHeader({
         mode,
