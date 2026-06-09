@@ -90,20 +90,36 @@ export function ThreadConversationView({
   const addToTrustedSendersBook = useContactStore((state) => state.addToTrustedSendersBook);
   const { client } = useAuthStore();
 
+  // Deduplicate emails by messageId — the server may return separate
+  // Email objects (e.g. Sent + Inbox copies) with different ids.
+  const dedupedEmails = useMemo(() => {
+    const seenIds = new Set<string>();
+    const seenMessageIds = new Set<string>();
+    return emails.filter(email => {
+      if (seenIds.has(email.id)) return false;
+      const mid = Array.isArray(email.messageId) ? email.messageId[0] : email.messageId;
+      const normalized = mid?.replace(/^<+/, '').replace(/>+$/, '').trim();
+      if (normalized && seenMessageIds.has(normalized)) return false;
+      seenIds.add(email.id);
+      if (normalized) seenMessageIds.add(normalized);
+      return true;
+    });
+  }, [emails]);
+
   // Track which emails are expanded (most recent by default)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [allowExternalContent, setAllowExternalContent] = useState<Set<string>>(new Set());
 
   // Auto-expand most recent email AND all unread emails when thread opens
   useEffect(() => {
-    if (emails.length > 0) {
+    if (dedupedEmails.length > 0) {
       const idsToExpand = new Set<string>();
 
       // Always expand most recent
-      idsToExpand.add(emails[0].id);
+      idsToExpand.add(dedupedEmails[0].id);
 
       // Also expand all unread emails
-      emails.forEach(email => {
+      dedupedEmails.forEach(email => {
         if (!email.keywords?.$seen) {
           idsToExpand.add(email.id);
         }
@@ -111,7 +127,7 @@ export function ThreadConversationView({
 
       setExpandedIds(idsToExpand);
     }
-  }, [emails]);
+  }, [dedupedEmails]);
 
   const toggleExpanded = (emailId: string) => {
     setExpandedIds(prev => {
@@ -159,7 +175,7 @@ export function ThreadConversationView({
             {thread.latestEmail.subject || t("email_viewer.no_subject")}
           </h1>
           <p className="text-sm text-muted-foreground">
-            {t("threads.messages_other", { count: emails.length })}
+            {t("threads.messages_other", { count: dedupedEmails.length })}
           </p>
         </div>
       </div>
@@ -167,7 +183,7 @@ export function ThreadConversationView({
       {/* Email Cards */}
       <div className="flex-1 overflow-y-auto">
         <div className="space-y-3" style={{ padding: 'var(--density-card-p)' }}>
-          {emails.map((email, index) => {
+          {dedupedEmails.map((email, index) => {
             const senderEmail = email.from?.[0]?.email?.toLowerCase();
             const senderIsTrusted = senderEmail
               ? isSenderTrusted(senderEmail) || (trustedSendersAddressBook && isTrustedAddressBookSender(senderEmail))

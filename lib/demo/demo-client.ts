@@ -170,6 +170,11 @@ export class DemoJMAPClient implements IJMAPClient {
     return this.data.emails.find(e => e.id === emailId) ?? null;
   }
 
+  async getEmailsByIds(emailIds: string[]): Promise<Email[]> {
+    const idSet = new Set(emailIds);
+    return this.data.emails.filter(e => idSet.has(e.id));
+  }
+
   async getTagCounts(tagIds: string[]): Promise<Record<string, { total: number; unread: number }>> {
     const result: Record<string, { total: number; unread: number }> = {};
     for (const tagId of tagIds) {

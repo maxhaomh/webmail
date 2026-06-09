@@ -474,7 +474,9 @@ export const ThreadListItem = React.forwardRef<HTMLDivElement, ThreadListItemPro
       );
     }
 
-    const emailsToShow = expandedEmails || thread.emails;
+    const emailsToShow = (expandedEmails || thread.emails).filter(
+      email => email.id !== latestEmail.id
+    );
 
     const handleThreadCheckboxClick = (e: React.MouseEvent) => {
       e.stopPropagation();

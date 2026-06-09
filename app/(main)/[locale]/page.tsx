@@ -1165,6 +1165,22 @@ export default function Home() {
 
       // Refresh the current mailbox to update the UI
       if (!isScheduledView) await fetchEmails(client, selectedMailbox);
+
+      // Ensure the sent email appears in the conversation grouping even if the
+      // server assigned it a different threadId. Fetch it and inject it into
+      // the emails array with the original email's threadId so it groups with
+      // the conversation in the current folder.
+      if (result.emailId && originalEmailId && selectedEmail?.threadId) {
+        try {
+          const [sentEmail] = await client.getEmailsByIds([result.emailId]);
+          if (sentEmail) {
+            sentEmail.threadId = selectedEmail.threadId;
+            useEmailStore.getState().injectEmailIntoList(sentEmail);
+          }
+        } catch (e) {
+          debug.error('Failed to inject sent email into conversation grouping:', e);
+        }
+      }
     } catch (error) {
       console.error("Failed to send email:", error);
     }
@@ -1191,16 +1207,22 @@ export default function Home() {
   ) => {
     if (!email) { setComposerQuoteHeader(null); return; }
     try {
+      const ownEmails = new Set(
+        useIdentityStore.getState().identities
+          .map(i => i.email?.trim().toLowerCase())
+          .filter(Boolean)
+      );
+      const isOwnEmail = (addr: string) => ownEmails.has(addr.trim().toLowerCase());
       const replyTargets = (email.replyTo?.length
         ? email.replyTo
         : email.from ?? []).filter(r => r.email).map(r => r.email!);
       const newTo = mode === 'reply'
         ? replyTargets
         : mode === 'replyAll'
-          ? [...replyTargets, ...(email.to ?? []).filter(r => r.email).map(r => r.email!)]
+          ? [...replyTargets, ...(email.to ?? []).filter(r => r.email && !isOwnEmail(r.email!)).map(r => r.email!)]
           : [];
       const newCc = mode === 'replyAll'
-        ? (email.cc ?? []).filter(r => r.email).map(r => r.email!)
+        ? (email.cc ?? []).filter(r => r.email && !isOwnEmail(r.email!)).map(r => r.email!)
         : [];
       const header = await buildQuoteHeader({
         mode,

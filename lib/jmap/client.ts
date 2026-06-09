@@ -111,6 +111,7 @@ const EMAIL_LIST_PROPERTIES = [
   "hasAttachment",
   // Needed so list rows can serve drag-out to the file system as .eml.
   "blobId",
+  "messageId",
 ] as const;
 
 // Stalwart's default property list for Calendar/get omits shareWith, isVisible,
@@ -1120,6 +1121,35 @@ export class JMAPClient implements IJMAPClient {
     }
   }
 
+  async getEmailsByIds(emailIds: string[], accountId?: string): Promise<Email[]> {
+    try {
+      const targetAccountId = accountId || this.accountId;
+
+      const response = await this.request([
+        ["Email/get", {
+          accountId: targetAccountId,
+          ids: emailIds,
+          properties: [...EMAIL_LIST_PROPERTIES],
+        }, "0"],
+      ]);
+
+      if (response.methodResponses?.[0]?.[0] === "Email/get") {
+        const emails = response.methodResponses[0][1].list || [];
+
+        if (accountId && accountId !== this.accountId) {
+          namespaceMailboxIds(emails, accountId);
+        }
+
+        return emails;
+      }
+
+      return [];
+    } catch (error) {
+      console.error('Failed to get emails by ids:', error);
+      return [];
+    }
+  }
+
   private async parseEmailHeaders(email: Email): Promise<void> {
     const { parseAuthenticationResults, parseSpamScore, parseSpamLLM } = await import('@/lib/email-headers');
 
@@ -1843,10 +1873,25 @@ export class JMAPClient implements IJMAPClient {
       ]);
 
       if (response.methodResponses?.[0]?.[0] === "Email/get") {
-        const emails = response.methodResponses[0][1].list || [];
+        const rawEmails = response.methodResponses[0][1].list || [];
 
         if (accountId && accountId !== this.accountId) {
-          namespaceMailboxIds(emails, accountId);
+          namespaceMailboxIds(rawEmails, accountId);
+        }
+
+        // JMAP RFC 8621 §4.1.2.3 specifies messageId as String[]|null, but the
+        // Email type in this codebase types it as string. Handle either shape.
+        const seenIds = new Set<string>();
+        const seenMessageIds = new Set<string>();
+        const emails: Email[] = [];
+        for (const email of rawEmails) {
+          if (seenIds.has(email.id)) continue;
+          const mid = Array.isArray(email.messageId) ? email.messageId[0] : email.messageId;
+          const normalized = mid ? stripMessageIdBrackets(mid) : '';
+          if (normalized && seenMessageIds.has(normalized)) continue;
+          emails.push(email);
+          seenIds.add(email.id);
+          if (normalized) seenMessageIds.add(normalized);
         }
 
         return emails.sort((a: Email, b: Email) =>

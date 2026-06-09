@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { Email, Mailbox, StateChange, ScheduledEmail, SendEmailResult } from "@/lib/jmap/types";
+import { Email, Mailbox, StateChange, ScheduledEmail, SendEmailResult, Thread } from "@/lib/jmap/types";
 import type { UnifiedMailboxRole } from "@/lib/jmap/types";
 import type { IJMAPClient } from "@/lib/jmap/client-interface";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -199,6 +199,7 @@ interface EmailStore {
   fetchThreadEmails: (client: IJMAPClient, threadId: string) => Promise<Email[]>;
   collapseAllThreads: () => void;
   updateThreadCache: (threadId: string, emails: Email[]) => void;
+  injectEmailIntoList: (email: Email) => void;
 
   // Mailbox management
   createMailbox: (client: IJMAPClient, name: string, parentId?: string) => Promise<void>;
@@ -300,6 +301,66 @@ function shouldClearPendingUndoSend(pending: PendingUndoSend | null, scheduledEm
  * account), since identity binding for cross-account sending is a separate
  * concern.
  */
+/**
+ * Enriches an email list with all emails from the same threads, regardless
+ * of which mailbox they belong to. This ensures the conversation grouping in
+ * the inbox shows all messages in a thread (e.g. sent replies appear alongside
+ * received emails).
+ */
+async function enrichEmailsWithThreadData(
+  client: IJMAPClient,
+  emails: Email[],
+  accountId?: string
+): Promise<Email[]> {
+  function sortByReceivedAtDesc(list: Email[]): Email[] {
+    return [...list].sort(
+      (a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()
+    );
+  }
+
+  if (emails.length === 0) return emails;
+
+  const threadIds = [...new Set(emails.map(e => e.threadId).filter(Boolean))];
+  if (threadIds.length === 0) return sortByReceivedAtDesc(emails);
+
+  try {
+    const threadPromises = threadIds.map(tid => client.getThread(tid, accountId));
+    const threads = await Promise.all(threadPromises);
+
+    const allEmailIds = [...new Set(
+      threads
+        .filter((t): t is Thread => t !== null)
+        .flatMap(t => t.emailIds)
+    )];
+
+    const threadEmails = await client.getEmailsByIds(allEmailIds, accountId);
+
+    const seenIds = new Set(emails.map(e => e.id));
+    // JMAP RFC 8621 §4.1.2.3: messageId is String[]|null – handle either shape.
+    const seenMessageIds = new Set<string>();
+    for (const e of emails) {
+      const mid = Array.isArray(e.messageId) ? e.messageId[0] : e.messageId;
+      if (mid) seenMessageIds.add(mid.replace(/^<+/, '').replace(/>+$/, '').trim());
+    }
+    const enriched: Email[] = [...emails];
+
+    for (const email of threadEmails) {
+      if (seenIds.has(email.id)) continue;
+      const mid = Array.isArray(email.messageId) ? email.messageId[0] : email.messageId;
+      const normalized = mid?.replace(/^<+/, '').replace(/>+$/, '').trim();
+      if (normalized && seenMessageIds.has(normalized)) continue;
+      enriched.push(email);
+      seenIds.add(email.id);
+      if (normalized) seenMessageIds.add(normalized);
+    }
+
+    return sortByReceivedAtDesc(enriched);
+  } catch (error) {
+    console.error('Failed to enrich emails with thread data:', error);
+    return sortByReceivedAtDesc(emails);
+  }
+}
+
 function resolveActionClient(passedClient: IJMAPClient): IJMAPClient {
   const viewingId = useEmailStore.getState().viewingAccountId;
   if (!viewingId) return passedClient;
@@ -727,8 +788,16 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       // When filtering by tag, omit the mailbox constraint so emails across
       // all folders that carry the tag are returned.
       const result = await effectiveClient.getEmails(selectedKeyword ? undefined : jmapMailboxId, accountId, emailsPerPage, 0, keywordFilter);
+      const baseEmails = annotateScheduledEmails(result.emails, get().scheduledSubmissionByEmailId);
+
+      // Enrich with all emails in each thread so conversation grouping shows
+      // messages across all mailboxes (e.g. sent replies in Inbox view).
+      const enriched = !selectedKeyword && !get().isUnifiedView
+        ? await enrichEmailsWithThreadData(effectiveClient, baseEmails, accountId)
+        : baseEmails;
+
       set({
-        emails: annotateScheduledEmails(result.emails, get().scheduledSubmissionByEmailId),
+        emails: enriched,
         hasMoreEmails: result.hasMore,
         totalEmails: result.total,
         isLoading: false
@@ -809,35 +878,31 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       // Capture position from current email count before the async call
       const position = emails.length;
 
+      // Derive accountId once for thread enrichment below
+      const loadMailboxes = resolveActionMailboxes();
+      const loadMailbox = loadMailboxes.find(mb => mb.id === selectedMailbox);
+      const loadAccountId = loadMailbox?.isShared ? loadMailbox.accountId : undefined;
+
       let result;
 
       const { searchFilters } = get();
       const hasFilters = !isFilterEmpty(searchFilters);
 
       if (searchQuery || hasFilters) {
-        const mailboxes = resolveActionMailboxes();
-        const mailbox = mailboxes.find(mb => mb.id === selectedMailbox);
-        const jmapMailboxId = mailbox?.originalId || selectedMailbox;
-        const accountId = mailbox?.isShared ? mailbox.accountId : undefined;
+        const jmapMailboxId = loadMailbox?.originalId || selectedMailbox;
 
         if (hasFilters) {
           const filter = buildJMAPFilter(searchQuery, searchFilters, jmapMailboxId);
-          result = await effectiveClient.advancedSearchEmails(filter, accountId, emailsPerPage, position);
+          result = await effectiveClient.advancedSearchEmails(filter, loadAccountId, emailsPerPage, position);
         } else {
-          result = await effectiveClient.searchEmails(searchQuery, jmapMailboxId, accountId, emailsPerPage, position);
+          result = await effectiveClient.searchEmails(searchQuery, jmapMailboxId, loadAccountId, emailsPerPage, position);
         }
       } else {
-        // Load more from mailbox
-        // Find the mailbox to get its accountId (for shared folder support)
-        const mailboxes = resolveActionMailboxes();
-        const mailbox = mailboxes.find(mb => mb.id === selectedMailbox);
-        // Only pass accountId for shared mailboxes, not for primary account
-        const accountId = mailbox?.isShared ? mailbox.accountId : undefined;
         // Use originalId for JMAP queries (shared mailboxes use namespaced IDs in the store)
-        const jmapMailboxId = mailbox?.originalId || selectedMailbox;
+        const jmapMailboxId = loadMailbox?.originalId || selectedMailbox;
 
         // When filtering by tag, omit the mailbox constraint (same rationale as fetchEmails).
-        result = await effectiveClient.getEmails(selectedKeyword ? undefined : jmapMailboxId, accountId, emailsPerPage, position, selectedKeyword ? `$label:${selectedKeyword}` : undefined);
+        result = await effectiveClient.getEmails(selectedKeyword ? undefined : jmapMailboxId, loadAccountId, emailsPerPage, position, selectedKeyword ? `$label:${selectedKeyword}` : undefined);
       }
 
       // Use fresh state when merging to avoid overwriting concurrent updates
@@ -849,8 +914,15 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       const existingIds = new Set(currentEmails.map(e => e.id));
       const newEmails = annotateScheduledEmails(result.emails, get().scheduledSubmissionByEmailId).filter((e: Email) => !existingIds.has(e.id));
 
+      const merged = [...currentEmails, ...newEmails];
+
+      // Enrich with thread data so cross-mailbox messages appear in grouping
+      const enriched = !selectedKeyword
+        ? await enrichEmailsWithThreadData(effectiveClient, merged, loadAccountId)
+        : merged;
+
       set({
-        emails: [...currentEmails, ...newEmails],
+        emails: enriched,
         hasMoreEmails: result.hasMore,
         totalEmails: result.total,
         isLoadingMore: false
@@ -1138,6 +1210,20 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
           return mailbox;
         });
 
+        // Sync the threadEmailsCache so expanded conversation views
+        // immediately reflect the read status change instead of showing
+        // a stale unread indicator until the next full refresh.
+        let updatedThreadEmailsCache = state.threadEmailsCache;
+        const threadId = emailInState.threadId;
+        if (threadId && state.threadEmailsCache.has(threadId)) {
+          const cachedEmails = state.threadEmailsCache.get(threadId)!;
+          const newCachedEmails = cachedEmails.map(e =>
+            e.id === emailId ? { ...e, keywords: { ...e.keywords, $seen: read } } : e
+          );
+          updatedThreadEmailsCache = new Map(state.threadEmailsCache);
+          updatedThreadEmailsCache.set(threadId, newCachedEmails);
+        }
+
         return {
           emails: state.emails.map(e =>
             e.id === emailId ? { ...e, keywords: { ...e.keywords, $seen: read } } : e
@@ -1146,6 +1232,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
             ? { ...state.selectedEmail, keywords: { ...state.selectedEmail.keywords, $seen: read } }
             : state.selectedEmail,
           mailboxes: updatedMailboxes,
+          threadEmailsCache: updatedThreadEmailsCache,
           processingReadStatus: newProcessingSet
         };
       });
@@ -1696,6 +1783,26 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       set({
         emails: updatedEmails,
         mailboxes: updatedMailboxes,
+        threadEmailsCache: (() => {
+          // Sync threadEmailsCache so expanded conversation views
+          // immediately reflect batch read status changes.
+          const currentCache = get().threadEmailsCache;
+          if (currentCache.size === 0) return currentCache;
+          const newCache = new Map(currentCache);
+          let cacheDirty = false;
+          for (const [tid, cached] of newCache) {
+            const affectedInThread = cached.filter(e => selectedEmailIds.has(e.id));
+            if (affectedInThread.length === 0) continue;
+            const updatedCached = cached.map(e =>
+              selectedEmailIds.has(e.id)
+                ? { ...e, keywords: { ...e.keywords, $seen: read } }
+                : e
+            );
+            newCache.set(tid, updatedCached);
+            cacheDirty = true;
+          }
+          return cacheDirty ? newCache : currentCache;
+        })(),
         selectedEmailIds: new Set(),
         isLoading: false
       });
@@ -2112,7 +2219,11 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       if (!accountChanges) return;
 
       // Handle Email state changes - refresh current mailbox
-      if (accountChanges.Email) {
+      // Also handle EmailDelivery since some JMAP servers send that type
+      // for incoming mail without including an Email state change.
+      // Handle Thread changes since replies to existing conversations update
+      // the Thread state hash (emailIds list grows) independently of Email.
+      if (accountChanges.Email || accountChanges.EmailDelivery || accountChanges.Thread) {
         await get().refreshCurrentMailbox(client);
         get().fetchTagCounts(client);
       }
@@ -2201,18 +2312,16 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
         result = await effectiveClient.getEmails(jmapMailboxId, accountId, emailsPerPage, 0);
       }
 
-      const currentEmails = get().emails;
-      const previousTotal = get().totalEmails;
-
       // Only notify for genuinely new incoming mail in the Inbox.
       // Without these guards the toast/sound also fires when sending,
       // saving drafts, or moving/deleting the top message in any mailbox,
       // because all of those change the first-email id of the current view.
       const newFirst = result.emails[0];
+      const preFetchEmails = get().emails;
       if (
         newFirst &&
         mailbox?.role === 'inbox' &&
-        !currentEmails.some(e => e.id === newFirst.id)
+        !preFetchEmails.some(e => e.id === newFirst.id)
       ) {
         get().handleNewEmailNotification(newFirst);
       }
@@ -2222,46 +2331,100 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       // virtual list to shrink and then rapidly re-load (scroll bounce).
       const refreshedEmails = annotateScheduledEmails(result.emails, get().scheduledSubmissionByEmailId);
 
+      // Read fresh state AFTER the async fetch completes. Capturing earlier
+      // (before the fetch) would create a stale closure: markAsRead or other
+      // actions could update state.emails during the fetch, and the merge
+      // below would overwrite those local updates with stale data.
+      const currentEmails = get().emails;
+
       // Build the merged list: start with the fresh first page, then append
-      // existing emails beyond that page (if any), skipping duplicates. Do not
-      // append the whole previous list: drafts are saved as destroy+create, so
-      // the old draft can disappear from the refreshed first page and must not
-      // be reintroduced from stale local state.
+      // ALL existing emails not in the fresh page. This is needed because the
+      // existing list may contain cross-mailbox emails (from thread enrichment)
+      // that are not in any mailbox-scoped query page. Without a full append
+      // those items get lost and the conversation stack breaks.
       const merged: Email[] = [...refreshedEmails];
       const mergedIds = new Set(refreshedEmails.map((e: Email) => e.id));
-      const insertedCount = Math.max((result.total || 0) - previousTotal, 0);
-      const appendFromIndex = Math.max(refreshedEmails.length - insertedCount, 0);
 
-      for (const email of currentEmails.slice(appendFromIndex)) {
+      for (const email of currentEmails) {
         if (!mergedIds.has(email.id)) {
           merged.push(email);
           mergedIds.add(email.id);
         }
       }
 
-      // Check if anything actually changed to avoid unnecessary re-renders
-      const hasChanged =
-        currentEmails.length !== merged.length ||
-        merged.some((email, i) => {
-          const curr = currentEmails[i];
-          if (!curr) return true;
-          return (
-            curr.id !== email.id ||
-            curr.threadId !== email.threadId ||
-            JSON.stringify(curr.keywords) !== JSON.stringify(email.keywords)
-          );
-        });
+      // Enrich with thread data so cross-mailbox messages appear in grouping
+      const enriched = !hasFilters && !searchQuery
+        ? await enrichEmailsWithThreadData(effectiveClient, merged, accountId)
+        : merged;
 
-      if (hasChanged) {
-        // hasMore should reflect whether there are still more emails beyond
-        // what we have loaded, using the fresh total from the server.
-        const hasMore = merged.length < (result.total || 0);
-        set({
-          emails: merged,
-          hasMoreEmails: hasMore,
-          totalEmails: result.total,
-        });
+      // Always apply the refreshed data when a state change fired to ensure
+      // thread-level changes (new reply in an existing conversation, etc.) are
+      // reflected even when the flattened email array indices happen to match.
+      const hasMore = merged.length < (result.total || 0);
+
+      // Batch the main state update and any thread-cache sync into a single
+      // set() to avoid an intermediate render where the expanded view sees stale
+      // cached emails alongside the new enriched emails array.
+      const setPatch: Record<string, unknown> = {
+        emails: enriched,
+        hasMoreEmails: hasMore,
+        totalEmails: result.total,
+      };
+
+      // Sync threadEmailsCache so previously-expanded threads show the complete
+      // set of sub-emails (including the new reply) without a re-fetch.
+      const currentCache = get().threadEmailsCache;
+      if (currentCache.size > 0) {
+        const enrichedByThread = new Map<string, Email[]>();
+        for (const e of enriched) {
+          const tid = e.threadId || '__no_thread';
+          if (!enrichedByThread.has(tid)) enrichedByThread.set(tid, []);
+          enrichedByThread.get(tid)!.push(e);
+        }
+        const newCache = new Map(currentCache);
+        let cacheDirty = false;
+        for (const [tid, cached] of newCache) {
+          const enrichedList = enrichedByThread.get(tid);
+          if (!enrichedList) continue;
+          const cachedIds = new Set(cached.map(e => e.id));
+          const newFromEnrich = enrichedList.filter(e => !cachedIds.has(e.id));
+
+          // Also sync read/starred status of already-cached emails from the
+          // enriched data. Without this, cached sub-emails keep stale keyword
+          // state after a push refresh (e.g. an email marked read locally
+          // still appears unread in the expanded view).
+          const enrichedMap = new Map(enrichedList.map(e => [e.id, e]));
+          let statusDirty = false;
+          const syncedCached = cached.map(e => {
+            const fresh = enrichedMap.get(e.id);
+            if (!fresh) return e;
+            const freshSeen = fresh.keywords?.$seen === true;
+            const cachedSeen = e.keywords?.$seen === true;
+            const freshFlagged = fresh.keywords?.$flagged === true;
+            const cachedFlagged = e.keywords?.$flagged === true;
+            if (freshSeen !== cachedSeen || freshFlagged !== cachedFlagged) {
+              statusDirty = true;
+              return { ...e, keywords: { ...e.keywords, $seen: freshSeen, $flagged: freshFlagged } };
+            }
+            return e;
+          });
+
+          if (newFromEnrich.length > 0 || statusDirty) {
+            const combined = statusDirty ? syncedCached : cached;
+            newCache.set(tid,
+              newFromEnrich.length > 0
+                ? [...combined, ...newFromEnrich].sort(
+                    (a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()
+                  )
+                : combined
+            );
+            cacheDirty = true;
+          }
+        }
+        if (cacheDirty) setPatch.threadEmailsCache = newCache;
       }
+
+      set(setPatch as Partial<EmailStore>);
     } catch (error) {
       console.error('Failed to refresh current mailbox:', error);
       // Don't set error state for background refreshes to avoid disrupting the UI
@@ -2341,6 +2504,42 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     const newCache = new Map(get().threadEmailsCache);
     newCache.set(threadId, emails);
     set({ threadEmailsCache: newCache });
+  },
+
+  injectEmailIntoList: (email: Email) => {
+    set((state) => {
+      if (state.emails.some(e => e.id === email.id)) return state;
+      const emailMid = Array.isArray(email.messageId) ? email.messageId[0] : email.messageId;
+      const emailNormalized = emailMid?.replace(/^<+/, '').replace(/>+$/, '').trim();
+      if (emailNormalized && state.emails.some(e => {
+        const mid = Array.isArray(e.messageId) ? e.messageId[0] : e.messageId;
+        const normalized = mid?.replace(/^<+/, '').replace(/>+$/, '').trim();
+        return normalized === emailNormalized;
+      })) return state;
+
+      const updated = [...state.emails, email].sort(
+        (a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()
+      );
+
+      const newCache = new Map(state.threadEmailsCache);
+      const cached = newCache.get(email.threadId);
+      if (cached) {
+        const alreadyCached = cached.some(e => e.id === email.id) ||
+          (!!emailNormalized && cached.some(e => {
+            const mid = Array.isArray(e.messageId) ? e.messageId[0] : e.messageId;
+            const normalized = mid?.replace(/^<+/, '').replace(/>+$/, '').trim();
+            return normalized === emailNormalized;
+          }));
+        if (!alreadyCached) {
+          newCache.set(email.threadId, [...cached, email]);
+        }
+      }
+
+      return {
+        emails: updated,
+        threadEmailsCache: newCache,
+      };
+    });
   },
 
   // Mailbox management
