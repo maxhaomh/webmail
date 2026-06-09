@@ -2747,8 +2747,6 @@ function RecipientChipInput({
   validationMessage?: string;
   onTab?: () => void;
 }) {
-  const t = useTranslations('email_composer');
-  const tCommon = useTranslations('common');
   const { contextMenu, openContextMenu, closeContextMenu, menuRef } = useContextMenu<{ index: number; chip: string }>();
   const [editingChip, setEditingChip] = useState<{ index: number; chip: string; editType: 'email' | 'name' } | null>(null);
   const [editValue, setEditValue] = useState('');
@@ -2965,7 +2963,7 @@ function RecipientChipInput({
                     handleSaveEdit(editValue);
                   }}
                   className="flex-1 min-w-[80px] border-0 outline-none h-5 text-sm bg-transparent text-foreground placeholder:text-muted-foreground"
-                  placeholder={editingChip?.editType === 'email' ? t('recipient_email_placeholder') : t('recipient_name_placeholder')}
+                  placeholder={editingChip?.editType === 'email' ? 'Email address' : 'Display name'}
                   data-bwignore="true"
                 />
               ) : (
@@ -3041,10 +3039,10 @@ function RecipientChipInput({
               {formatChipDisplay(contextMenu.data.chip)}
             </div>
             <ContextMenuSeparator />
-            <ContextMenuItem label={t('recipient_edit_email')} onClick={handleEditEmail} />
-            <ContextMenuItem label={t('recipient_edit_name')} onClick={handleEditName} />
+            <ContextMenuItem label="Edit email address" onClick={handleEditEmail} />
+            <ContextMenuItem label="Edit display name" onClick={handleEditName} />
             <ContextMenuSeparator />
-            <ContextMenuItem label={tCommon('delete')} onClick={() => {
+            <ContextMenuItem label="Remove" onClick={() => {
               if (contextMenu.data) {
                 handleChipRemove(contextMenu.data.index, { stopPropagation: () => {} } as React.MouseEvent);
               }
