@@ -1210,6 +1210,20 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
           return mailbox;
         });
 
+        // Sync the threadEmailsCache so expanded conversation views
+        // immediately reflect the read status change instead of showing
+        // a stale unread indicator until the next full refresh.
+        let updatedThreadEmailsCache = state.threadEmailsCache;
+        const threadId = emailInState.threadId;
+        if (threadId && state.threadEmailsCache.has(threadId)) {
+          const cachedEmails = state.threadEmailsCache.get(threadId)!;
+          const newCachedEmails = cachedEmails.map(e =>
+            e.id === emailId ? { ...e, keywords: { ...e.keywords, $seen: read } } : e
+          );
+          updatedThreadEmailsCache = new Map(state.threadEmailsCache);
+          updatedThreadEmailsCache.set(threadId, newCachedEmails);
+        }
+
         return {
           emails: state.emails.map(e =>
             e.id === emailId ? { ...e, keywords: { ...e.keywords, $seen: read } } : e
@@ -1218,6 +1232,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
             ? { ...state.selectedEmail, keywords: { ...state.selectedEmail.keywords, $seen: read } }
             : state.selectedEmail,
           mailboxes: updatedMailboxes,
+          threadEmailsCache: updatedThreadEmailsCache,
           processingReadStatus: newProcessingSet
         };
       });
@@ -1768,6 +1783,26 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       set({
         emails: updatedEmails,
         mailboxes: updatedMailboxes,
+        threadEmailsCache: (() => {
+          // Sync threadEmailsCache so expanded conversation views
+          // immediately reflect batch read status changes.
+          const currentCache = get().threadEmailsCache;
+          if (currentCache.size === 0) return currentCache;
+          const newCache = new Map(currentCache);
+          let cacheDirty = false;
+          for (const [tid, cached] of newCache) {
+            const affectedInThread = cached.filter(e => selectedEmailIds.has(e.id));
+            if (affectedInThread.length === 0) continue;
+            const updatedCached = cached.map(e =>
+              selectedEmailIds.has(e.id)
+                ? { ...e, keywords: { ...e.keywords, $seen: read } }
+                : e
+            );
+            newCache.set(tid, updatedCached);
+            cacheDirty = true;
+          }
+          return cacheDirty ? newCache : currentCache;
+        })(),
         selectedEmailIds: new Set(),
         isLoading: false
       });
@@ -2277,17 +2312,16 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
         result = await effectiveClient.getEmails(jmapMailboxId, accountId, emailsPerPage, 0);
       }
 
-      const currentEmails = get().emails;
-
       // Only notify for genuinely new incoming mail in the Inbox.
       // Without these guards the toast/sound also fires when sending,
       // saving drafts, or moving/deleting the top message in any mailbox,
       // because all of those change the first-email id of the current view.
       const newFirst = result.emails[0];
+      const preFetchEmails = get().emails;
       if (
         newFirst &&
         mailbox?.role === 'inbox' &&
-        !currentEmails.some(e => e.id === newFirst.id)
+        !preFetchEmails.some(e => e.id === newFirst.id)
       ) {
         get().handleNewEmailNotification(newFirst);
       }
@@ -2296,6 +2330,12 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       // This avoids discarding already-loaded pages which would cause the
       // virtual list to shrink and then rapidly re-load (scroll bounce).
       const refreshedEmails = annotateScheduledEmails(result.emails, get().scheduledSubmissionByEmailId);
+
+      // Read fresh state AFTER the async fetch completes. Capturing earlier
+      // (before the fetch) would create a stale closure: markAsRead or other
+      // actions could update state.emails during the fetch, and the merge
+      // below would overwrite those local updates with stale data.
+      const currentEmails = get().emails;
 
       // Build the merged list: start with the fresh first page, then append
       // ALL existing emails not in the fresh page. This is needed because the
@@ -2348,11 +2388,35 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
           if (!enrichedList) continue;
           const cachedIds = new Set(cached.map(e => e.id));
           const newFromEnrich = enrichedList.filter(e => !cachedIds.has(e.id));
-          if (newFromEnrich.length > 0) {
+
+          // Also sync read/starred status of already-cached emails from the
+          // enriched data. Without this, cached sub-emails keep stale keyword
+          // state after a push refresh (e.g. an email marked read locally
+          // still appears unread in the expanded view).
+          const enrichedMap = new Map(enrichedList.map(e => [e.id, e]));
+          let statusDirty = false;
+          const syncedCached = cached.map(e => {
+            const fresh = enrichedMap.get(e.id);
+            if (!fresh) return e;
+            const freshSeen = fresh.keywords?.$seen === true;
+            const cachedSeen = e.keywords?.$seen === true;
+            const freshFlagged = fresh.keywords?.$flagged === true;
+            const cachedFlagged = e.keywords?.$flagged === true;
+            if (freshSeen !== cachedSeen || freshFlagged !== cachedFlagged) {
+              statusDirty = true;
+              return { ...e, keywords: { ...e.keywords, $seen: freshSeen, $flagged: freshFlagged } };
+            }
+            return e;
+          });
+
+          if (newFromEnrich.length > 0 || statusDirty) {
+            const combined = statusDirty ? syncedCached : cached;
             newCache.set(tid,
-              [...cached, ...newFromEnrich].sort(
-                (a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()
-              )
+              newFromEnrich.length > 0
+                ? [...combined, ...newFromEnrich].sort(
+                    (a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()
+                  )
+                : combined
             );
             cacheDirty = true;
           }
