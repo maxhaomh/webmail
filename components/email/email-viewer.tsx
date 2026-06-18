@@ -2915,23 +2915,6 @@ export function EmailViewer({
 
     const colorScheme = isDark && emailHasNativeDarkMode ? 'light dark' : 'light';
 
-    // Bare HTML emails (no <style>) tend to be plain prose without their own
-    // layout - give them the same padding as plain-text mails (.email-content-text).
-    // Word/Outlook HTML emails ship a <style> block but put their gutter in
-    // @page margins (print-only), so they need a fallback body padding too.
-    const isWordHtml = /class=["']?(?:Mso|WordSection)|<o:p[\s>/]|urn:schemas-microsoft-com:office:office/i.test(effectiveEmailContent.html);
-    const hasOwnLayout = effectiveEmailContent.hasStyleTag && !isWordHtml;
-    const bodyPadding = hasOwnLayout ? '0' : '1rem 1.25rem';
-    const mobileBodyPaddingX = hasOwnLayout ? '0' : '0.75rem';
-
-    // Word emails rely on empty <p class=MsoNormal>&nbsp;</p> spacers for vertical
-    // rhythm. With our default line-height: 1.6 these stack into oversized gaps;
-    // tighten to match how Outlook/Gmail render the same source.
-    const wordHtmlCSS = isWordHtml ? `
-      body { line-height: 1.15; }
-      p.MsoNormal, li.MsoNormal, div.MsoNormal { margin: 0 0 6px; }
-    ` : '';
-
     // Defense-in-depth CSP inside srcDoc: even if the sanitizer ever lets a
     // <script> tag through, the iframe document forbids script execution
     // (default-src 'none'). img/style/font remain permissive to match what the
@@ -2956,16 +2939,13 @@ export function EmailViewer({
      fit - the latter wraps header text to one character per line, which reads
      as 90deg-rotated vertical headers (issue #409). */
   html { overflow: hidden; height: auto !important; }
-  body { margin: 0; padding: ${bodyPadding}; overflow-x: auto; overflow-y: hidden; height: auto !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; line-height: 1.6; color: #1a1a1a; background: #ffffff; word-wrap: break-word; overflow-wrap: break-word; }
-  @media (max-width: 640px) { body { padding-left: ${mobileBodyPaddingX}; padding-right: ${mobileBodyPaddingX}; } }
+  body { margin: 0; overflow-x: auto; overflow-y: hidden; height: auto !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
   img { max-width: 100% !important; height: auto !important; }
   a { color: #1a73e8; }
-  table { max-width: 100% !important; table-layout: auto; overflow-wrap: break-word; }
   /* break-word (not anywhere): break only over-long single words, and keep each
      word's min-content width so columns are not collapsed to a single char. */
   td, th { overflow-wrap: break-word; }
   pre { white-space: pre-wrap; word-wrap: break-word; }
-  ${wordHtmlCSS}
   ${darkModeCSS}
 </style></head><body>${effectiveEmailContent.html}<style>html,body{height:auto!important;min-height:0!important;max-height:none!important}</style></body></html>`;
   }, [effectiveEmailContent.html, effectiveEmailContent.isHtml, isDark, emailHasNativeDarkMode]);
@@ -5532,13 +5512,13 @@ export function EmailViewer({
 
           {/* Email Body */}
           <div className={cn(
-            "email-content-wrapper overflow-x-auto",
+            "email-content-wrapper overflow-x-auto px-5 py-4",
             !isDark && resolvedTheme === 'dark' ? "bg-white email-content-light" : "bg-background"
           )}
           style={isDark ? { backgroundColor: '#121212' } : undefined}>
             {isBodyLoading ? (
               <div
-                className="space-y-3 px-6 py-4 animate-pulse"
+                className="space-y-3 animate-pulse"
                 style={{ minHeight: `${lastBodyHeightRef.current}px` }}
               >
                 <div className="h-2 bg-muted/15 rounded w-full"></div>
