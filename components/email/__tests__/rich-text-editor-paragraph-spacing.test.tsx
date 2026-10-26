@@ -22,6 +22,17 @@ async function setup(content: string) {
 const serialize = (editor: Editor) => serializeEditorContent(editor).replace(/ dir="auto"/g, '');
 
 describe('RichTextEditor paragraph spacing (#1340)', () => {
+  it('keeps separate quote-header rows at zero margin after sending and reopening', async () => {
+    const editor = await setup('<p style="margin:0"><strong>From:</strong> Max</p><p style="margin:0"><strong>Sent:</strong> Sunday</p>');
+    const saved = serialize(editor);
+    const root = document.createElement('div');
+    root.innerHTML = saved;
+    expect(root.querySelectorAll('p')).toHaveLength(2);
+    root.querySelectorAll('p').forEach((row) => expect(row.style.margin).toBe('0px'));
+    act(() => { editor.commands.setContent(saved, { emitUpdate: false }); });
+    expect(serialize(editor)).toBe(saved);
+  });
+
   it('sends each line with the 4px margin the composer shows, not the 1em default', async () => {
     const editor = await setup('<p>one</p><p>two</p>');
 

@@ -3,6 +3,7 @@
 import { Node as TiptapNode, mergeAttributes } from "@tiptap/core";
 import { DOMSerializer } from "@tiptap/pm/model";
 import { NodeSelection, Plugin, PluginKey, Selection, TextSelection } from "@tiptap/pm/state";
+import { GapCursor } from "@tiptap/pm/gapcursor";
 import type { Editor } from "@tiptap/react";
 
 import { addParagraphSpacing, addTrailingParagraphBreaks } from "@/components/email/paragraph-breaks";
@@ -100,6 +101,17 @@ export const QuotedHtml = TiptapNode.create({
     return [
       new Plugin({
         key: new PluginKey("quotedHtmlFocus"),
+        appendTransaction: (_transactions, _oldState, state) => {
+          const { selection } = state;
+          // The separator and quote are both non-text blocks. Clicking their
+          // shared boundary creates a horizontal gap cursor; use the reply's
+          // existing typing area instead of creating text inside the header.
+          if (!(selection instanceof GapCursor)
+            || selection.$from.nodeAfter?.type.name !== "quotedHtml") return null;
+          const caret = Selection.findFrom(selection.$from, -1, true)
+            || Selection.findFrom(selection.$from, 1, true);
+          return caret ? state.tr.setSelection(caret) : null;
+        },
         props: {
           handleDOMEvents: {
             mousedown: markPlaced,
@@ -144,7 +156,7 @@ export const QuotedHtml = TiptapNode.create({
       dom.setAttribute(QUOTED_HTML_MARKER, "");
       dom.className = "quoted-html-island";
       const updateQuoteStyle = (showBorder: boolean) => {
-        dom.style.cssText = (showBorder ? QUOTE_BAR_STYLE : "margin-top:8px;")
+        dom.style.cssText = (showBorder ? QUOTE_BAR_STYLE : "margin:0;")
           + QUOTE_ISLAND_CONTAINMENT_STYLE;
       };
       updateQuoteStyle(node.attrs.showQuoteBorder !== false);
@@ -299,29 +311,8 @@ export function buildQuotedHtmlBlock(
   opts: { remoteAllowed?: boolean; showQuoteBorder?: boolean } = {},
 ): string {
   const showQuoteBorder = opts.showQuoteBorder !== false;
-  let html = sanitizedInnerHtml;
-  if (!showQuoteBorder) {
-    // Outlook-style replies flatten quote levels, including earlier replies.
-    // Work on sanitized DOM so tables, links and signatures remain intact.
-    // A template's content is inert: parsed into a plain div, the original's
-    // remote images would load here, past the parking the island does.
-    const container = document.createElement("template");
-    container.innerHTML = html;
-    const content = container.content;
-    content.querySelectorAll("blockquote").forEach((quote) => {
-      const block = content.ownerDocument.createElement("div");
-      block.append(...Array.from(quote.childNodes));
-      quote.replaceWith(block);
-    });
-    content.querySelectorAll<HTMLElement>(`[${QUOTED_HTML_MARKER}]`).forEach((quote) => {
-      quote.setAttribute("data-quote-border", "false");
-      quote.style.borderLeft = "none";
-      quote.style.paddingLeft = "0";
-    });
-    html = container.innerHTML;
-  }
   const remote = opts.remoteAllowed ? ` ${QUOTED_REMOTE_ALLOWED_ATTR}="allowed"` : "";
   const borderAttribute = showQuoteBorder ? "" : ' data-quote-border="false"';
-  const style = showQuoteBorder ? QUOTE_BAR_STYLE : "margin-top:8px;";
-  return `<div ${QUOTED_HTML_MARKER}${remote}${borderAttribute} style="${style}">${html}</div>`;
+  const style = showQuoteBorder ? QUOTE_BAR_STYLE : "margin:0;";
+  return `<div ${QUOTED_HTML_MARKER}${remote}${borderAttribute} style="${style}">${sanitizedInnerHtml}</div>`;
 }

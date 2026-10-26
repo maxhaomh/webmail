@@ -4,6 +4,8 @@ import Document from '@tiptap/extension-document';
 import Paragraph from '@tiptap/extension-paragraph';
 import Text from '@tiptap/extension-text';
 import { NodeSelection, TextSelection } from '@tiptap/pm/state';
+import { GapCursor } from '@tiptap/pm/gapcursor';
+import HorizontalRule from '@tiptap/extension-horizontal-rule';
 import type { Editor as ReactEditor } from '@tiptap/react';
 
 import { QuotedHtml, buildQuotedHtmlBlock, serializeEditorContent } from '../quoted-html';
@@ -18,10 +20,10 @@ afterEach(() => {
   editor = null;
 });
 
-function mountReply(): Editor {
+function mountReply(showQuoteBorder = true): Editor {
   return new Editor({
     extensions: [Document, Paragraph, Text, QuotedHtml],
-    content: `<p></p>${buildQuotedHtmlBlock('<p>Original message</p>')}`,
+    content: `<p></p>${buildQuotedHtmlBlock('<p>Original message</p>', { showQuoteBorder })}`,
   });
 }
 
@@ -34,6 +36,25 @@ function selectQuote(e: Editor) {
 }
 
 describe('QuotedHtml focus', () => {
+  it('redirects the gap between the separator and quote to the reply paragraph', () => {
+    editor = new Editor({
+      extensions: [Document, Paragraph, Text, HorizontalRule, QuotedHtml],
+      content: `<p></p><hr>${buildQuotedHtmlBlock('<p>From: Sender</p><p>Original message</p>', { showQuoteBorder: false })}`,
+    });
+    let quotePosition = -1;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'quotedHtml') quotePosition = pos;
+    });
+    editor.view.dispatch(editor.state.tr.setSelection(new GapCursor(editor.state.doc.resolve(quotePosition))));
+    expect(editor.state.selection).toBeInstanceOf(TextSelection);
+    expect(editor.state.selection.from).toBe(1);
+    editor.commands.insertContent('My reply');
+    expect(editor.state.doc.firstChild?.textContent).toBe('My reply');
+    const saved = serializeEditorContent(editor as unknown as ReactEditor);
+    expect(saved).toContain('<hr>');
+    expect(saved).toContain('Original message');
+  });
+
   it('moves a selection resting on the quote to the start of the body on focus', () => {
     editor = mountReply();
     selectQuote(editor);
@@ -44,8 +65,8 @@ describe('QuotedHtml focus', () => {
     expect(editor.state.selection.from).toBe(1);
   });
 
-  it('keeps the quote when the user types right after focusing', () => {
-    editor = mountReply();
+  it.each([true, false])('keeps the quote when typing after focus (border: %s)', (showQuoteBorder) => {
+    editor = mountReply(showQuoteBorder);
     selectQuote(editor);
 
     editor.view.dom.dispatchEvent(new FocusEvent('focus'));

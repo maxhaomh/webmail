@@ -713,23 +713,42 @@ export function EmailComposer({
 
     // Plugin override (resolved at composer open via onBuildQuoteHeader).
     if (replyTo.quoteHeaderHtml !== undefined && (mode === 'reply' || mode === 'replyAll' || mode === 'forward')) {
+      if (replyTo.quoteWrapInBlockquote === false) {
+        // Preserve header rows in the HTML island, but keep the plugin's
+        // leading separator in the editor so it retains its original styling.
+        const header = document.createElement('div');
+        header.innerHTML = sanitizeEmailHtml(replyTo.quoteHeaderHtml);
+        let separator = '';
+        if (header.firstElementChild?.tagName === 'HR') {
+          separator = header.firstElementChild.outerHTML;
+          header.firstElementChild.remove();
+        }
+        const original = replyTo.htmlBody
+          ? rewriteCidImagesForEditor(sanitizeEmailHtml(replyTo.htmlBody))
+          : (replyTo.body || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+        const island = buildQuotedHtmlBlock(
+          header.innerHTML + original,
+          { remoteAllowed: quoteRemoteAllowed, showQuoteBorder: false },
+        );
+        // An atomic quote cannot host the reply caret. Always leave a text
+        // paragraph before it so initial typing cannot replace the quote.
+        return `${prefix || '<p></p>'}${signatureBlock}${separator}${island}`;
+      }
       if (replyTo.htmlBody) {
         // Layout-heavy original: embed verbatim as a QuotedHtml island so
         // nested tables / MJML survive 1:1 (sanitize strips scripts/styles
         // first; cid rewrite runs after so its data-cid markers survive).
         const island = buildQuotedHtmlBlock(
           rewriteCidImagesForEditor(sanitizeEmailHtml(replyTo.htmlBody)),
-          { remoteAllowed: quoteRemoteAllowed, showQuoteBorder: replyTo.quoteWrapInBlockquote !== false },
+          { remoteAllowed: quoteRemoteAllowed, showQuoteBorder: true },
         );
         return `${prefix}${signatureBlock}<br>${replyTo.quoteHeaderHtml}${island}`;
       }
       const escaped = replyTo.body
         ? replyTo.body.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')
         : '';
-      const wrap = replyTo.quoteWrapInBlockquote !== false;
-      const bodyHtml = wrap
-        ? `<blockquote style="margin:0 0 0 0.8ex;border-left:2px solid #ccc;padding-left:1ex">${escaped}</blockquote>`
-        : escaped;
+      // The borderless case returned above, so this path always wraps the body.
+      const bodyHtml = `<blockquote style="margin:0 0 0 0.8ex;border-left:2px solid #ccc;padding-left:1ex">${escaped}</blockquote>`;
       return `${prefix}${signatureBlock}<br>${replyTo.quoteHeaderHtml}${bodyHtml}`;
     }
 

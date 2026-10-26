@@ -7,7 +7,7 @@ import { useAuthStore } from '@/stores/auth-store';
 // ─── Heavy component mocks (mirrors composer-draft-attachments.test.tsx) ──────
 
 vi.mock('@/components/email/rich-text-editor', () => ({
-  RichTextEditor: () => React.createElement('div', { 'data-testid': 'rich-text-editor' }),
+  RichTextEditor: ({ content }: { content: string }) => React.createElement('div', { 'data-testid': 'rich-text-editor', 'data-content': content }),
 }));
 
 vi.mock('@/components/plugins/plugin-slot', () => ({ PluginSlot: () => null }));
@@ -198,6 +198,23 @@ describe('reply/forward inline image cid normalization', () => {
     });
     return { fetchBlobArrayBuffer };
   }
+
+  it.each(['reply', 'replyAll', 'forward'] as const)('starts a borderless %s with an editable paragraph before the quote', (mode) => {
+    render(<EmailComposer mode={mode} onSend={vi.fn()} onClose={vi.fn()} replyTo={{
+      from: [{ email: 'sender@example.com' }],
+      htmlBody: '<p>Original message</p>',
+      quoteHeaderHtml: '<hr style="border:none;border-top:1px solid #999999;margin:12px 0"><div>From: Sender</div>',
+      quoteWrapInBlockquote: false,
+    }} />);
+    const content = screen.getByTestId('rich-text-editor').getAttribute('data-content')!;
+    const root = document.createElement('div');
+    root.innerHTML = content;
+    expect(root.firstElementChild?.tagName).toBe('P');
+    expect(root.firstElementChild?.textContent).toBe('');
+    expect(root.children[1]?.tagName).toBe('HR');
+    expect(root.querySelector('[data-quoted-html] hr')).toBeNull();
+    expect(root.querySelector('[data-quoted-html]')?.textContent).toContain('Original message');
+  });
 
   it('sends a reply with the image inlined by cid, not duplicated as a regular attachment', async () => {
     const { fetchBlobArrayBuffer } = mockClient();
