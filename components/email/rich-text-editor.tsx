@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useCallback, useState, useRef } from "react";
+import React, { useEffect, useCallback, useState, useRef, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import type { SuggestionProps } from "@tiptap/suggestion";
@@ -13,7 +13,7 @@ import TextAlign from "@tiptap/extension-text-align";
 import { TextDirection } from "@/components/email/text-direction";
 import { PlainTextPaste } from "@/components/email/plain-text-paste";
 import { pastedImageFiles } from "@/components/email/paste-images";
-import { TextStyle, BackgroundColor } from "@tiptap/extension-text-style";
+import { TextStyle, BackgroundColor, FontFamily, LineHeight } from "@tiptap/extension-text-style";
 import Color from "@tiptap/extension-color";
 import { FontSize, FONT_SIZES } from "@/components/email/font-size";
 import { ResizableImage } from "@/components/email/resizable-image";
@@ -117,6 +117,9 @@ interface RichTextEditorProps {
    * away entirely.
    */
   toolbarPlacement?: 'top' | 'bottom' | 'hidden';
+  /** Move the live formatting controls into the desktop ribbon. */
+  toolbarContainer?: HTMLElement | null;
+  insertContainer?: HTMLElement | null;
 }
 
 function ToolbarButton({
@@ -138,6 +141,8 @@ function ToolbarButton({
       onClick={onClick}
       disabled={disabled}
       title={title}
+      aria-label={title}
+      aria-pressed={active}
       className={cn(
         // Bigger on a phone, where 28px was hard to hit with a finger.
         "p-1.5 max-md:p-2 rounded hover:bg-accent transition-colors",
@@ -148,6 +153,43 @@ function ToolbarButton({
       {children}
     </button>
   );
+}
+
+function FormattingGroup({ ribbon, label, children, target }: { ribbon: boolean; label: string; children: React.ReactNode; target?: HTMLElement | null }) {
+  if (!ribbon) return <>{children}</>;
+  const group = <div role="group" aria-label={label} className="flex shrink-0 items-center gap-0.5 border-e border-border/70 px-1.5 last:border-0">{children}</div>;
+  return target ? createPortal(group, target) : group;
+}
+
+function ToolbarPopup({ anchor, floating, popupId, className, onClose, children }: {
+  anchor: React.RefObject<HTMLDivElement | null>; floating: boolean; popupId: string; className?: string; onClose: () => void; children: React.ReactNode;
+}) {
+  const [position, setPosition] = useState({ top: 0, left: 0 });
+  useLayoutEffect(() => {
+    if (!floating || !anchor.current) return;
+    const rect = anchor.current.getBoundingClientRect();
+    setPosition({ top: rect.bottom + 4, left: Math.max(8, Math.min(rect.left, window.innerWidth - 288)) });
+  }, [anchor, floating]);
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+      anchor.current?.querySelector('button')?.focus();
+    };
+    // Capture before the composer's Escape-to-close handler, including portals.
+    document.addEventListener('keydown', keydown, true);
+    const panel = anchor.current?.closest('[role=tabpanel]');
+    const observer = new MutationObserver(() => { if (panel?.hasAttribute('hidden')) onClose(); });
+    if (floating && panel) observer.observe(panel, { attributes: true, attributeFilter: ['hidden'] });
+    return () => {
+      observer.disconnect();
+      document.removeEventListener('keydown', keydown, true);
+    };
+  }, [anchor, floating, onClose]);
+  const popup = <div data-editor-toolbar-popup={popupId} className={cn('z-[100] rounded-md border border-border bg-popover shadow-md', floating ? 'fixed max-h-[70dvh] overflow-y-auto' : 'absolute top-full start-0 mt-1', className)} style={floating ? position : undefined}>{children}</div>;
+  return floating ? createPortal(popup, document.body) : popup;
 }
 
 function ToolbarSeparator() {
@@ -214,6 +256,8 @@ export function RichTextEditor({
   onMentionAdd,
   collapseToolbarOnMobile = false,
   toolbarPlacement = 'top',
+  toolbarContainer,
+  insertContainer,
 }: RichTextEditorProps) {
   const rtlEditingSupport = useSettingsStore((st) => st.rtlEditingSupport);
   const tComposer = useTranslations("email_composer");
@@ -248,6 +292,8 @@ export function RichTextEditor({
         types: ["heading", "paragraph"],
       }),
       TextStyle,
+      FontFamily,
+      LineHeight,
       Color,
       BackgroundColor,
       FontSize,
@@ -371,6 +417,7 @@ export function RichTextEditor({
       onChange(serializeEditorContent(editor));
     },
     immediatelyRender: false,
+    shouldRerenderOnTransaction: true,
   });
 
   // Sync external content changes (e.g. template application). Compare against
@@ -412,6 +459,7 @@ export function RichTextEditor({
   }, [editor]);
 
   const tToolbar = useTranslations("email_composer.toolbar");
+  const tRibbon = useTranslations("ribbon");
   const [tableMenuOpen, setTableMenuOpen] = useState(false);
   const tableWrapperRef = useRef<HTMLDivElement>(null);
   const [colorMenuOpen, setColorMenuOpen] = useState(false);
@@ -424,7 +472,7 @@ export function RichTextEditor({
   useEffect(() => {
     if (!fontSizeMenuOpen) return;
     const handler = (e: MouseEvent) => {
-      if (fontSizeWrapperRef.current && !fontSizeWrapperRef.current.contains(e.target as Node)) {
+      if (fontSizeWrapperRef.current && !fontSizeWrapperRef.current.contains(e.target as Node) && !(e.target as Element).closest('[data-editor-toolbar-popup="fontSize"]')) {
         setFontSizeMenuOpen(false);
       }
     };
@@ -435,7 +483,7 @@ export function RichTextEditor({
   useEffect(() => {
     if (!colorMenuOpen) return;
     const handler = (e: MouseEvent) => {
-      if (colorWrapperRef.current && !colorWrapperRef.current.contains(e.target as Node)) {
+      if (colorWrapperRef.current && !colorWrapperRef.current.contains(e.target as Node) && !(e.target as Element).closest('[data-editor-toolbar-popup="color"]')) {
         setColorMenuOpen(false);
       }
     };
@@ -446,7 +494,7 @@ export function RichTextEditor({
   useEffect(() => {
     if (!bgColorMenuOpen) return;
     const handler = (e: MouseEvent) => {
-      if (bgColorWrapperRef.current && !bgColorWrapperRef.current.contains(e.target as Node)) {
+      if (bgColorWrapperRef.current && !bgColorWrapperRef.current.contains(e.target as Node) && !(e.target as Element).closest('[data-editor-toolbar-popup="bgColor"]')) {
         setBgColorMenuOpen(false);
       }
     };
@@ -457,7 +505,7 @@ export function RichTextEditor({
   useEffect(() => {
     if (!tableMenuOpen) return;
     const handler = (e: MouseEvent) => {
-      if (tableWrapperRef.current && !tableWrapperRef.current.contains(e.target as Node)) {
+      if (tableWrapperRef.current && !tableWrapperRef.current.contains(e.target as Node) && !(e.target as Element).closest('[data-editor-toolbar-popup="table"]')) {
         setTableMenuOpen(false);
       }
     };
@@ -474,28 +522,36 @@ export function RichTextEditor({
   const currentFontSize: string | null = editor.getAttributes("textStyle").fontSize ?? null;
   const currentBgColor: string | null = editor.getAttributes("textStyle").backgroundColor ?? null;
 
-  return (
-    <div className={cn("flex flex-col", hasError && "ring-2 ring-red-500 dark:ring-red-400 rounded", className)}>
-      {/* Toolbar - sticky within the composer's scroll container so it stays
-          visible while editing long bodies. Its background is the colour
-          bg-muted/30 gives over the page, made opaque: the same at rest, and
-          body text scrolling underneath stays hidden instead of showing
-          through, which a backdrop blur alone did not guarantee (browsers
-          that skip backdrop-filter drew the text sharp under the buttons). */}
+  const formattingToolbar = (
       <div
         data-testid="rich-text-toolbar"
+        data-ribbon-formatting={toolbarContainer ? "" : undefined}
         className={cn(
           "sticky z-20 flex flex-wrap items-center gap-0.5 px-3 py-1.5 bg-[color-mix(in_oklab,var(--color-muted)_30%,var(--color-background))]",
           toolbarPlacement === 'bottom'
             ? "order-last bottom-0 mx-2 mb-1 rounded-lg border border-border/60 shadow-sm"
             : "top-0 border-b border-border/50",
-          toolbarPlacement === 'hidden' && "hidden",
-          collapseToolbarOnMobile && "max-md:hidden"
+          !toolbarContainer && toolbarPlacement === 'hidden' && "hidden",
+          !toolbarContainer && collapseToolbarOnMobile && "max-md:hidden"
         )}
       >
+        <FormattingGroup ribbon={!!toolbarContainer} label={tRibbon("font")}>
+        {toolbarContainer && <>
+          <select aria-label={tRibbon('font_family')} title={tRibbon('font_family')} className="h-7 w-32 rounded border border-input bg-background px-1 text-xs focus-visible:ring-2 focus-visible:ring-ring"
+            value={editor.getAttributes('textStyle').fontFamily || ''} onChange={event => { const value = event.target.value; if (value) editor.chain().focus().setFontFamily(value).run(); else editor.chain().focus().unsetFontFamily().run(); }}>
+            <option value="">{tRibbon('default_font')}</option>
+            {['Arial', 'Calibri', 'Georgia', 'Tahoma', 'Times New Roman', 'Verdana', 'Courier New'].map(font => <option key={font} value={font}>{font}</option>)}
+          </select>
+          <select aria-label={tRibbon('font_size')} title={tRibbon('font_size')} className="h-7 w-14 rounded border border-input bg-background px-1 text-xs focus-visible:ring-2 focus-visible:ring-ring"
+            value={currentFontSize || ''} onChange={event => { const value = event.target.value; if (value) editor.chain().focus().setFontSize(value).run(); else editor.chain().focus().unsetFontSize().run(); }}>
+            <option value="">14</option>
+            {!['10px', '12px', ...FONT_SIZES, '36px', '48px'].includes(currentFontSize || '') && currentFontSize && <option value={currentFontSize}>{currentFontSize}</option>}
+            {['10px', '12px', ...FONT_SIZES, '36px', '48px'].map(size => <option key={size} value={size}>{size.replace('px', '')}</option>)}
+          </select>
+        </>}
         {/* Font size - two baseline-aligned A's read as "size" at a glance;
             once a size is chosen the button shows that number instead. */}
-        <div ref={fontSizeWrapperRef} className="relative">
+        <div ref={fontSizeWrapperRef} className={cn("relative", toolbarContainer && "hidden")}>
           <ToolbarButton
             active={fontSizeMenuOpen || !!currentFontSize}
             onClick={() => setFontSizeMenuOpen((v) => !v)}
@@ -513,7 +569,7 @@ export function RichTextEditor({
             )}
           </ToolbarButton>
           {fontSizeMenuOpen && (
-            <div className="absolute z-50 top-full start-0 mt-1 bg-popover border border-border rounded-md shadow-md p-1 min-w-[64px]">
+            <ToolbarPopup anchor={fontSizeWrapperRef} floating={!!toolbarContainer} popupId="fontSize" onClose={() => setFontSizeMenuOpen(false)} className="p-1 min-w-[64px]">
               {FONT_SIZES.map((size) => (
                 <button
                   key={size}
@@ -542,11 +598,13 @@ export function RichTextEditor({
               >
                 <RemoveFormatting className="w-4 h-4" /> {tToolbar("font_size_default")}
               </button>
-            </div>
+            </ToolbarPopup>
           )}
         </div>
 
-        <ToolbarSeparator />
+
+        {!toolbarContainer && <ToolbarSeparator />}
+
 
         <ToolbarButton
           active={editor.isActive("bold")}
@@ -586,7 +644,7 @@ export function RichTextEditor({
             <Baseline className="w-4 h-4" style={{ color: editor.getAttributes("textStyle").color || undefined }} />
           </ToolbarButton>
           {colorMenuOpen && (
-            <div className="absolute z-50 top-full start-0 mt-1 bg-popover border border-border rounded-md shadow-md p-2">
+            <ToolbarPopup anchor={colorWrapperRef} floating={!!toolbarContainer} popupId="color" onClose={() => setColorMenuOpen(false)} className="p-2">
               <div className="grid gap-0.5" style={{ gridTemplateColumns: "repeat(8, 1fr)" }}>
                 {TEXT_COLORS.map((color) => (
                   <button
@@ -616,7 +674,7 @@ export function RichTextEditor({
               >
                 <RemoveFormatting className="w-4 h-4" /> {tToolbar("remove_color")}
               </button>
-            </div>
+            </ToolbarPopup>
           )}
         </div>
         {/* Background color - same palette, same grid and same swatch
@@ -640,7 +698,7 @@ export function RichTextEditor({
             </span>
           </ToolbarButton>
           {bgColorMenuOpen && (
-            <div className="absolute z-50 top-full start-0 mt-1 bg-popover border border-border rounded-md shadow-md p-2">
+            <ToolbarPopup anchor={bgColorWrapperRef} floating={!!toolbarContainer} popupId="bgColor" onClose={() => setBgColorMenuOpen(false)} className="p-2">
               <div className="grid gap-0.5" style={{ gridTemplateColumns: "repeat(8, 1fr)" }}>
                 {TEXT_COLORS.map((color) => (
                   <button
@@ -670,11 +728,15 @@ export function RichTextEditor({
               >
                 <RemoveFormatting className="w-4 h-4" /> {tToolbar("remove_background_color")}
               </button>
-            </div>
+            </ToolbarPopup>
           )}
         </div>
 
-        <ToolbarSeparator />
+
+        </FormattingGroup>
+        {!toolbarContainer && <ToolbarSeparator />}
+        <FormattingGroup ribbon={!!toolbarContainer} label={tRibbon("styles")}>
+
 
         <ToolbarButton
           active={editor.isActive("heading", { level: 1 })}
@@ -691,7 +753,11 @@ export function RichTextEditor({
           <Heading2 className="w-4 h-4" />
         </ToolbarButton>
 
-        <ToolbarSeparator />
+
+        </FormattingGroup>
+        {!toolbarContainer && <ToolbarSeparator />}
+        <FormattingGroup ribbon={!!toolbarContainer} label={tRibbon("paragraph")}>
+
 
         <ToolbarButton
           active={editor.isActive("bulletList")}
@@ -722,7 +788,9 @@ export function RichTextEditor({
           <Code className="w-4 h-4" />
         </ToolbarButton>
 
-        <ToolbarSeparator />
+
+        {!toolbarContainer && <ToolbarSeparator />}
+
 
         <ToolbarButton
           active={editor.isActive({ textAlign: "left" })}
@@ -762,7 +830,15 @@ export function RichTextEditor({
           </ToolbarButton>
         )}
 
-        <ToolbarSeparator />
+
+        {toolbarContainer && <select aria-label={tRibbon('line_spacing')} title={tRibbon('line_spacing')} className="h-7 w-16 rounded border border-input bg-background px-1 text-xs focus-visible:ring-2 focus-visible:ring-ring"
+          value={editor.getAttributes('textStyle').lineHeight || ''} onChange={event => { const value = event.target.value; if (value) editor.chain().focus().setLineHeight(value).run(); else editor.chain().focus().unsetLineHeight().run(); }}>
+          <option value="">1.0</option><option value="1.15">1.15</option><option value="1.5">1.5</option><option value="2">2.0</option>
+        </select>}
+        </FormattingGroup>
+        {!toolbarContainer && <ToolbarSeparator />}
+        <FormattingGroup ribbon={!!toolbarContainer} label={tRibbon("insert")} target={insertContainer}>
+
 
         <ToolbarButton
           active={editor.isActive("link")}
@@ -781,7 +857,7 @@ export function RichTextEditor({
             <TableIcon className="w-4 h-4" />
           </ToolbarButton>
           {tableMenuOpen && (
-            <div className="absolute z-50 top-full start-0 mt-1 bg-popover border border-border rounded-md shadow-md p-2 min-w-[200px]">
+            <ToolbarPopup anchor={tableWrapperRef} floating={!!toolbarContainer} popupId="table" onClose={() => setTableMenuOpen(false)} className="p-2 min-w-[200px]">
               {editor.isActive("table") ? (
                 <div className="flex flex-col gap-0.5">
                   <button
@@ -851,11 +927,15 @@ export function RichTextEditor({
                   }}
                 />
               )}
-            </div>
+            </ToolbarPopup>
           )}
         </div>
 
-        <ToolbarSeparator />
+
+        </FormattingGroup>
+        {!toolbarContainer && <ToolbarSeparator />}
+        <FormattingGroup ribbon={!!toolbarContainer} label={tRibbon("editing")}>
+
 
         <ToolbarButton
           onClick={() => editor.chain().focus().clearNodes().unsetAllMarks().run()}
@@ -864,7 +944,9 @@ export function RichTextEditor({
           <RemoveFormatting className="w-4 h-4" />
         </ToolbarButton>
 
-        <ToolbarSeparator />
+
+        {!toolbarContainer && <ToolbarSeparator />}
+
 
         <ToolbarButton
           onClick={() => editor.chain().focus().undo().run()}
@@ -880,7 +962,19 @@ export function RichTextEditor({
         >
           <Redo className="w-4 h-4" />
         </ToolbarButton>
+        </FormattingGroup>
       </div>
+  );
+
+  return (
+    <div className={cn("flex flex-col", hasError && "ring-2 ring-red-500 dark:ring-red-400 rounded", className)}>
+      {/* Toolbar - sticky within the composer's scroll container so it stays
+          visible while editing long bodies. Its background is the colour
+          bg-muted/30 gives over the page, made opaque: the same at rest, and
+          body text scrolling underneath stays hidden instead of showing
+          through, which a backdrop blur alone did not guarantee (browsers
+          that skip backdrop-filter drew the text sharp under the buttons). */}
+      {toolbarContainer ? createPortal(formattingToolbar, toolbarContainer) : formattingToolbar}
 
       {/* Editor */}
       <EditorContent editor={editor} />

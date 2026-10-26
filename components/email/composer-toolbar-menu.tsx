@@ -1,5 +1,6 @@
 "use client";
 
+import { createPortal } from "react-dom";
 import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Check, ChevronDown, iconForName, Puzzle, type AppIcon } from "@/components/icons";
@@ -12,6 +13,7 @@ interface ComposerToolbarMenuProps {
   label: string;
   /** Number of options that are switched on, shown as a badge on the button. */
   activeCount?: number;
+  placement?: "top" | "bottom";
   testId?: string;
   children: (close: () => void) => React.ReactNode;
 }
@@ -20,15 +22,20 @@ interface ComposerToolbarMenuProps {
  * A labelled toolbar button that opens a small menu above it. The label is
  * always the accessible name; it is only hidden visually on narrow screens.
  */
-export function ComposerToolbarMenu({ icon: Icon, label, activeCount = 0, testId, children }: ComposerToolbarMenuProps) {
+export function ComposerToolbarMenu({ icon: Icon, label, activeCount = 0, placement = "top", testId, children }: ComposerToolbarMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
+  const popupRef = useRef<HTMLDivElement>(null);
+  const [popupPosition, setPopupPosition] = useState({ top: 0, left: 0 });
 
   useEffect(() => {
     if (!open) return;
+    const panel = rootRef.current?.closest('[role=tabpanel]');
+    const observer = new MutationObserver(() => { if (panel?.hasAttribute('hidden')) setOpen(false); });
+    if (panel) observer.observe(panel, { attributes: true, attributeFilter: ['hidden'] });
     const onPointerDown = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      if (!rootRef.current?.contains(event.target as Node) && !popupRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -39,6 +46,7 @@ export function ComposerToolbarMenu({ icon: Icon, label, activeCount = 0, testId
     document.addEventListener("mousedown", onPointerDown);
     document.addEventListener("keydown", onKeyDown, true);
     return () => {
+      observer.disconnect();
       document.removeEventListener("mousedown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown, true);
     };
@@ -51,7 +59,11 @@ export function ComposerToolbarMenu({ icon: Icon, label, activeCount = 0, testId
       <Button
         type="button"
         variant="ghost"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          const rect = rootRef.current?.getBoundingClientRect();
+          if (rect) setPopupPosition({ top: rect.bottom + 4, left: Math.max(8, Math.min(rect.left, window.innerWidth - 288)) });
+          setOpen((v) => !v);
+        }}
         // 44px on a phone, where 36px was hard to hit with a finger.
         className={cn("h-9 max-md:h-11 max-md:min-w-11 justify-center gap-1.5 px-2 sm:px-2.5", open && "bg-muted")}
         title={label}
@@ -70,16 +82,15 @@ export function ComposerToolbarMenu({ icon: Icon, label, activeCount = 0, testId
         )}
         <ChevronDown className="hidden sm:block w-3.5 h-3.5 text-muted-foreground" />
       </Button>
-      {open && (
-        <div
-          id={menuId}
-          role="menu"
-          aria-label={label}
-          className="absolute start-0 bottom-full z-50 mb-2 min-w-56 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-lg"
-        >
+      {open && (placement === "bottom" ? createPortal(
+        <div ref={popupRef} id={menuId} role="menu" aria-label={label} className="fixed z-[100] w-72 max-h-[70dvh] overflow-y-auto rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-lg" style={popupPosition}>
+          {children(close)}
+        </div>, document.body
+      ) : (
+        <div id={menuId} role="menu" aria-label={label} className="absolute start-0 bottom-full z-50 mb-2 min-w-56 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-lg">
           {children(close)}
         </div>
-      )}
+      ))}
     </div>
   );
 }

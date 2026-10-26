@@ -237,8 +237,9 @@ export type Density = 'extra-compact' | 'compact' | 'regular' | 'comfortable';
  * own layout; `mountain-view` is an optional alternative arrangement of the
  * chrome (search-first top bar, flat 256px navigation rail, pill Compose,
  * docked compose window) that keeps the theme's icons, type and palette.
+ * `ribbon` adds a desktop command ribbon above the folder/list/reading panes.
  */
-export type InterfaceLayout = 'default' | 'mountain-view';
+export type InterfaceLayout = 'default' | 'mountain-view' | 'ribbon';
 // Mountain View's inbox: Gmail's "Default" or "Unread first" (lib/unread-first.ts).
 export type MvInboxType = 'default' | 'unread-first';
 export type DeleteAction = 'trash' | 'trash-and-read' | 'permanent';

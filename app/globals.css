@@ -1227,3 +1227,32 @@ optgroup {
     width: var(--mv-rail-peek-w);
   }
 }
+
+/* Simplified ribbon: all commands stay inline; menus portal outside the strip. */
+.ribbon [data-ribbon-formatting] {
+  position: static;
+  flex-wrap: nowrap;
+  align-items: center;
+  min-height: 2rem;
+  gap: 0.125rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.ribbon [data-ribbon-formatting] button {
+  min-width: 1.75rem;
+  min-height: 1.75rem;
+  padding: 0.375rem;
+}
+.ribbon [data-ribbon-formatting] button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.ribbon-composer-actions > button,
+.ribbon-composer-actions > div > button {
+  height: 2rem;
+  font-size: 0.75rem;
+}
+.ribbon-command-strip {
+  scrollbar-width: thin;
+}

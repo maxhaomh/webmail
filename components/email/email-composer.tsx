@@ -1,6 +1,10 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useCallback, useMemo, useId } from "react";
+import { createPortal } from "react-dom";
+import { RibbonCommand, RibbonMenu, RibbonMenuItem, RibbonSeparator } from "@/components/layout/ribbon-controls";
+import { RibbonComposerContext } from "@/components/layout/ribbon-composer-context";
+
+import React, { useState, useEffect, useRef, useCallback, useMemo, useId, useContext } from "react";
 import { useMvComposeWindow } from "@/components/email/mv-compose-context";
 import { useFocusTrap } from "@/hooks/use-focus-trap";
 import { useTranslations } from "next-intl";
@@ -8,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   X,
+  Mail,
   Paperclip,
   Send,
   Save,
@@ -954,6 +959,8 @@ export function EmailComposer({
   // the window's title bar, and a bottom bar led by Send with the formatting
   // bar folded away behind "Aa" until asked for.
   const mvWindow = useMvComposeWindow();
+  const ribbon = useContext(RibbonComposerContext);
+  const tRibbon = useTranslations("ribbon");
   const [mvShowFormatting, setMvShowFormatting] = useState(false);
   // "close" (X, Escape): save or discard. "discard" (the Discard button): the
   // user already chose, so only confirm it.
@@ -3718,6 +3725,120 @@ export function EmailComposer({
     }
   };
 
+  const attachTools = (
+    (filesEnabled && composerClient?.supportsFiles?.()) || hasAttachMenuActions ? (
+      <ComposerToolbarMenu placement={ribbon?.actionTarget ? "bottom" : "top"} icon={Paperclip} label={t('attach')} testId="composer-attach-menu">
+        {(close) => <>
+          <ComposerToolbarMenuItem
+            icon={Upload}
+            onSelect={() => { close(); fileInputRef.current?.click(); }}
+          >
+            {t('attach_from_device')}
+          </ComposerToolbarMenuItem>
+          {filesEnabled && composerClient?.supportsFiles?.() && (
+            <ComposerToolbarMenuItem
+              icon={FolderOpen}
+              onSelect={() => { close(); setFilesPicker({ client: composerClient, accountId: composerAccountId }); }}
+              testId="composer-attach-from-files"
+            >
+              {t('attach_from_files')}
+            </ComposerToolbarMenuItem>
+          )}
+          <ComposerPluginMenuItems surface="composer-attach-menu" context={composerActionContext} onSelect={close} separator />
+        </>}
+      </ComposerToolbarMenu>
+    ) : (
+      <Button
+        variant="ghost"
+        onClick={() => fileInputRef.current?.click()}
+        className="h-9 max-md:h-11 max-md:min-w-11 justify-center gap-1.5 px-2 sm:px-2.5"
+        title={t('attach')}
+        aria-label={t('attach')}
+      >
+        <Paperclip className="w-4 h-4" />
+        <span className="hidden sm:inline text-sm">{t('attach')}</span>
+      </Button>
+    )
+  );
+  const templateTools = (
+    templatesEnabled && (
+      <ComposerToolbarMenu placement={ribbon?.actionTarget ? "bottom" : "top"} icon={LayoutTemplate} label={t('templates_menu')} testId="composer-templates-menu">
+        {(close) => <>
+          <ComposerToolbarMenuItem icon={FileText} onSelect={() => { close(); setShowTemplatePicker(true); }}>
+            {t('insert_template')}
+          </ComposerToolbarMenuItem>
+          <ComposerToolbarMenuItem icon={BookmarkPlus} onSelect={() => { close(); setShowSaveAsTemplate(true); }}>
+            {t('save_as_template')}
+          </ComposerToolbarMenuItem>
+        </>}
+      </ComposerToolbarMenu>
+    )
+  );
+  const optionTools = (
+    <ComposerToolbarMenu placement={ribbon?.actionTarget ? "bottom" : "top"}
+      icon={SlidersHorizontal}
+      label={t('options')}
+      activeCount={[plainTextMode, requestReadReceipt, requestDsn, requireTls, priority !== 'normal'].filter(Boolean).length + pluginOptionsOn}
+      testId="composer-options-menu"
+    >
+      {(close) => <>
+        <ComposerToolbarMenuCheckItem
+          checked={plainTextMode}
+          onToggle={togglePlainTextMode}
+          description={t('option_plain_text_hint')}
+          testId="composer-format-toggle"
+        >
+          {t('option_plain_text')}
+        </ComposerToolbarMenuCheckItem>
+        <ComposerToolbarMenuCheckItem
+          checked={requestReadReceipt}
+          onToggle={() => setRequestReadReceipt(v => !v)}
+          description={t('option_read_receipt_hint')}
+          testId="composer-read-receipt-toggle"
+        >
+          {t('option_read_receipt')}
+        </ComposerToolbarMenuCheckItem>
+        {composerClient?.supportsSubmissionExtension?.('DSN') && (
+          <ComposerToolbarMenuCheckItem
+            checked={requestDsn}
+            onToggle={() => setRequestDsn(v => !v)}
+            description={t('option_dsn_hint')}
+            testId="composer-dsn-toggle"
+          >
+            {t('option_dsn')}
+          </ComposerToolbarMenuCheckItem>
+        )}
+        {composerClient?.supportsSubmissionExtension?.('REQUIRETLS') && (
+          <ComposerToolbarMenuCheckItem
+            checked={requireTls}
+            onToggle={() => setRequireTls(v => !v)}
+            description={t('option_require_tls_hint')}
+            testId="composer-require-tls-toggle"
+          >
+            {t('option_require_tls')}
+          </ComposerToolbarMenuCheckItem>
+        )}
+        <div role="separator" className="my-1 h-px bg-border" />
+        <div role="group" aria-label={t('option_priority')} data-testid="composer-priority">
+          <div className="px-3 pt-1 pb-0.5 text-xs font-medium text-muted-foreground" aria-hidden="true">{t('option_priority')}</div>
+          {(['high', 'normal', 'low'] as const).map((level) => (
+            <ComposerToolbarMenuRadioItem
+              key={level}
+              checked={priority === level}
+              onSelect={() => setPriority(level)}
+              testId={`composer-priority-${level}`}
+            >
+              {t(`option_priority_${level}`)}
+            </ComposerToolbarMenuRadioItem>
+          ))}
+        </div>
+        <ComposerPluginMenuItems surface="composer-options-menu" context={composerActionContext} onSelect={close} separator />
+        <ComposerPluginMenuItems surface="composer-toolbar-actions" context={composerActionContext} onSelect={close} separator onlyWhenNarrow />
+      </>}
+    </ComposerToolbarMenu>
+  );
+
+
   return (
     <div
       ref={setComposerRootEl}
@@ -3725,6 +3846,57 @@ export function EmailComposer({
       className={cn("flex h-full bg-background relative", className)}
       onKeyDownCapture={handleComposerKeyDown}
     >
+      <input ref={fileInputRef} type="file" multiple onChange={handleFileSelect} className="hidden" accept="*/*" />
+      {ribbon?.formatTarget && plainTextMode && createPortal(<p role="status" className="px-2 text-xs text-muted-foreground">{tRibbon("plain_text")}</p>, ribbon.formatTarget)}
+      {ribbon?.actionTarget && createPortal(<>
+        <RibbonCommand icon={Send} label={t('send')} primary onClick={() => void handleSend()} disabled={!canSend || isSending} />
+        {(composerClient?.hasDelayedSend() || hasSendMenuActions) && <RibbonMenu icon={CalendarClock} label={t('schedule_send')} disabled={!canSend || isSending}>
+          {close => <>
+            {composerClient?.hasDelayedSend() && <RibbonMenuItem onClick={() => { close(); openScheduleDialog(); }}>{t('schedule_send')}</RibbonMenuItem>}
+            <ComposerPluginMenuItems surface="composer-send-menu" context={sendMenuContext} onSelect={close} />
+          </>}
+        </RibbonMenu>}
+        <RibbonSeparator />{attachTools}{optionTools}
+        {activeClient?.supportsPrincipals?.() && <RibbonCommand icon={BookUser} label={t('select_from_directory')} onClick={() => setShowDirectoryPicker(true)} />}
+        <ComposerPluginToolbarButtons surface="composer-toolbar-actions" context={composerActionContext} />
+        <RibbonSeparator /><RibbonCommand icon={Trash2} label={t('discard')} onClick={handleDiscardClick} />
+      </>, ribbon.actionTarget)}
+      {ribbon?.insertTarget && createPortal(<>
+        {attachTools}{templateTools}
+        <RibbonMenu icon={FileText} label={tRibbon('signature')} disabled={plainTextMode || !identities.some(identity => identity.htmlSignature || identity.textSignature)}>
+          {close => identities.filter(identity => identity.htmlSignature || identity.textSignature).map(identity => <RibbonMenuItem key={identity.id} onClick={() => {
+            close();
+            const editor = editorRef.current;
+            if (!editor || editor.isDestroyed) return;
+            const html = replaceEmbeddedSignature(serializeEditorContent(editor), buildEmbeddedSignatureHtml(identity, { embed: true, separator: signatureSeparatorEnabled }), { quoteHeader: getQuoteHeaderLine() });
+            editor.commands.setContent(html, { emitUpdate: true });
+          }}>{identity.name || identity.email}</RibbonMenuItem>)}
+        </RibbonMenu><RibbonSeparator />
+        <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded px-2 text-xs hover:bg-accent focus-within:ring-2 focus-within:ring-ring">
+          <Paperclip className="h-4 w-4" />{tRibbon('pictures')}
+          <input type="file" accept="image/*" multiple className="sr-only" disabled={plainTextMode} onChange={async event => {
+            const files = Array.from(event.currentTarget.files ?? []);
+            event.currentTarget.value = '';
+            for (const file of files) {
+              if (!file.type.startsWith('image/')) continue;
+              const image = await handleImageUpload(file);
+              const editor = editorRef.current;
+              if (image && editor && !editor.isDestroyed) editor.chain().focus().insertContent({ type: 'image', attrs: { src: image.src, cid: image.cid, alt: file.name } }).run();
+            }
+          }} />
+        </label>
+      </>, ribbon.insertTarget)}
+      {ribbon?.optionsTarget && createPortal(<>
+        <RibbonCommand icon={Type} label={t('option_plain_text')} pressed={plainTextMode} onClick={togglePlainTextMode} />
+        <RibbonSeparator />
+        <RibbonCommand icon={Mail} label={t('option_read_receipt')} pressed={requestReadReceipt} onClick={() => setRequestReadReceipt(value => !value)} />
+        {composerClient?.supportsSubmissionExtension?.('DSN') && <RibbonCommand icon={Mail} label={t('option_dsn')} pressed={requestDsn} onClick={() => setRequestDsn(value => !value)} />}
+        {composerClient?.supportsSubmissionExtension?.('REQUIRETLS') && <RibbonCommand icon={SlidersHorizontal} label={t('option_require_tls')} pressed={requireTls} onClick={() => setRequireTls(value => !value)} />}
+        <RibbonSeparator />
+        <RibbonMenu icon={SlidersHorizontal} label={t('option_priority')}>
+          {() => (['high', 'normal', 'low'] as const).map(level => <RibbonMenuItem key={level} checked={priority === level} onClick={() => setPriority(level)}>{t(`option_priority_${level}`)}</RibbonMenuItem>)}
+        </RibbonMenu>
+      </>, ribbon.optionsTarget)}
       <ComposerPluginSidebar side="left" mode={pluginSidebars.modes.left} onOpen={() => pluginSidebars.open('left')} onClose={() => pluginSidebars.close('left')} extraProps={pluginSidebarLeftProps} width={pluginSidebars.widths.left} onWidthChange={(w) => pluginSidebars.setSideWidth('left', w)} />
       {/* Right-side composer sidebar slot is rendered after the main content div below. */}
     <div
@@ -4259,6 +4431,8 @@ export function EmailComposer({
         ) : (
           <div ref={editorContainerRef} onContextMenu={onBodyContextMenu}>
             <RichTextEditor
+              toolbarContainer={ribbon?.formatTarget}
+              insertContainer={ribbon?.insertTarget}
               content={body}
               onChange={(html) => {
                 setBody(html);
@@ -4418,6 +4592,7 @@ export function EmailComposer({
         {/* Bottom toolbar. In Mountain View's window both halves fold into
             one row (see [data-mv-compose-footer] in globals.css): Send first,
             the tools after it, and Discard as a bin at the far end. */}
+        {!ribbon?.actionTarget && (
         <div
           data-mv-compose-footer={mvWindow ? "" : undefined}
           className={cn(
@@ -4427,47 +4602,7 @@ export function EmailComposer({
         >
           {/* Left side actions */}
           <div className="flex min-w-0 flex-1 items-center gap-1">
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              onChange={handleFileSelect}
-              className="hidden"
-              accept="*/*"
-            />
-            {(filesEnabled && composerClient?.supportsFiles?.()) || hasAttachMenuActions ? (
-              <ComposerToolbarMenu icon={Paperclip} label={t('attach')} testId="composer-attach-menu">
-                {(close) => <>
-                  <ComposerToolbarMenuItem
-                    icon={Upload}
-                    onSelect={() => { close(); fileInputRef.current?.click(); }}
-                  >
-                    {t('attach_from_device')}
-                  </ComposerToolbarMenuItem>
-                  {filesEnabled && composerClient?.supportsFiles?.() && (
-                    <ComposerToolbarMenuItem
-                      icon={FolderOpen}
-                      onSelect={() => { close(); setFilesPicker({ client: composerClient, accountId: composerAccountId }); }}
-                      testId="composer-attach-from-files"
-                    >
-                      {t('attach_from_files')}
-                    </ComposerToolbarMenuItem>
-                  )}
-                  <ComposerPluginMenuItems surface="composer-attach-menu" context={composerActionContext} onSelect={close} separator />
-                </>}
-              </ComposerToolbarMenu>
-            ) : (
-              <Button
-                variant="ghost"
-                onClick={() => fileInputRef.current?.click()}
-                className="h-9 max-md:h-11 max-md:min-w-11 justify-center gap-1.5 px-2 sm:px-2.5"
-                title={t('attach')}
-                aria-label={t('attach')}
-              >
-                <Paperclip className="w-4 h-4" />
-                <span className="hidden sm:inline text-sm">{t('attach')}</span>
-              </Button>
-            )}
+            {attachTools}
             {!plainTextMode && (
               <Button
                 variant="ghost"
@@ -4486,81 +4621,10 @@ export function EmailComposer({
                 <Type className="w-4 h-4" />
               </Button>
             )}
-            {templatesEnabled && (
-              <ComposerToolbarMenu icon={LayoutTemplate} label={t('templates_menu')} testId="composer-templates-menu">
-                {(close) => <>
-                  <ComposerToolbarMenuItem icon={FileText} onSelect={() => { close(); setShowTemplatePicker(true); }}>
-                    {t('insert_template')}
-                  </ComposerToolbarMenuItem>
-                  <ComposerToolbarMenuItem icon={BookmarkPlus} onSelect={() => { close(); setShowSaveAsTemplate(true); }}>
-                    {t('save_as_template')}
-                  </ComposerToolbarMenuItem>
-                </>}
-              </ComposerToolbarMenu>
-            )}
+            {templateTools}
             {/* Sign/encrypt controls are contributed by crypto plugins via the
                 composer-toolbar slot (rendered below). */}
-            <ComposerToolbarMenu
-              icon={SlidersHorizontal}
-              label={t('options')}
-              activeCount={[plainTextMode, requestReadReceipt, requestDsn, requireTls, priority !== 'normal'].filter(Boolean).length + pluginOptionsOn}
-              testId="composer-options-menu"
-            >
-              {(close) => <>
-                <ComposerToolbarMenuCheckItem
-                  checked={plainTextMode}
-                  onToggle={togglePlainTextMode}
-                  description={t('option_plain_text_hint')}
-                  testId="composer-format-toggle"
-                >
-                  {t('option_plain_text')}
-                </ComposerToolbarMenuCheckItem>
-                <ComposerToolbarMenuCheckItem
-                  checked={requestReadReceipt}
-                  onToggle={() => setRequestReadReceipt(v => !v)}
-                  description={t('option_read_receipt_hint')}
-                  testId="composer-read-receipt-toggle"
-                >
-                  {t('option_read_receipt')}
-                </ComposerToolbarMenuCheckItem>
-                {composerClient?.supportsSubmissionExtension?.('DSN') && (
-                  <ComposerToolbarMenuCheckItem
-                    checked={requestDsn}
-                    onToggle={() => setRequestDsn(v => !v)}
-                    description={t('option_dsn_hint')}
-                    testId="composer-dsn-toggle"
-                  >
-                    {t('option_dsn')}
-                  </ComposerToolbarMenuCheckItem>
-                )}
-                {composerClient?.supportsSubmissionExtension?.('REQUIRETLS') && (
-                  <ComposerToolbarMenuCheckItem
-                    checked={requireTls}
-                    onToggle={() => setRequireTls(v => !v)}
-                    description={t('option_require_tls_hint')}
-                    testId="composer-require-tls-toggle"
-                  >
-                    {t('option_require_tls')}
-                  </ComposerToolbarMenuCheckItem>
-                )}
-                <div role="separator" className="my-1 h-px bg-border" />
-                <div role="group" aria-label={t('option_priority')} data-testid="composer-priority">
-                  <div className="px-3 pt-1 pb-0.5 text-xs font-medium text-muted-foreground" aria-hidden="true">{t('option_priority')}</div>
-                  {(['high', 'normal', 'low'] as const).map((level) => (
-                    <ComposerToolbarMenuRadioItem
-                      key={level}
-                      checked={priority === level}
-                      onSelect={() => setPriority(level)}
-                      testId={`composer-priority-${level}`}
-                    >
-                      {t(`option_priority_${level}`)}
-                    </ComposerToolbarMenuRadioItem>
-                  ))}
-                </div>
-                <ComposerPluginMenuItems surface="composer-options-menu" context={composerActionContext} onSelect={close} separator />
-                <ComposerPluginMenuItems surface="composer-toolbar-actions" context={composerActionContext} onSelect={close} separator onlyWhenNarrow />
-              </>}
-            </ComposerToolbarMenu>
+            {optionTools}
             <ComposerPluginToolbarButtons surface="composer-toolbar-actions" context={composerActionContext} />
           </div>
 
@@ -4643,6 +4707,7 @@ export function EmailComposer({
             )}
           </div>
         </div>
+        )}
 
       {showTemplatePicker && (
         <TemplatePicker

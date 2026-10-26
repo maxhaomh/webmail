@@ -139,6 +139,7 @@ export function LayoutSection() {
           options={[
             { value: 'default', label: t('interface_layout.default') },
             { value: 'mountain-view', label: t('interface_layout.mountain_view') },
+            { value: 'ribbon', label: t('interface_layout.ribbon') },
           ]}
         />
       </SettingItem>

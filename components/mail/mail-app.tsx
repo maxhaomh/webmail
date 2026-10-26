@@ -92,6 +92,9 @@ import { peekListAttachments, requestListAttachments, type ListAttachmentSource,
 import { useSearchHistoryStore } from "@/stores/search-history-store";
 import { WelcomeBanner } from "@/components/ui/welcome-banner";
 import { NavigationRail } from "@/components/layout/navigation-rail";
+import { RibbonComposerContext } from "@/components/layout/ribbon-composer-context";
+import { buildMoveTargets, resolveMoveOwnerAccountId } from "@/lib/move-targets";
+import { Ribbon } from "@/components/layout/ribbon";
 import { MvTopBar } from "@/components/layout/mv-top-bar";
 import { PluginActions } from "@/components/plugins/plugin-actions";
 import { useAppCommands } from "@/lib/app-commands";
@@ -215,6 +218,10 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
   // giving it a permanent second bar under the header.
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [showComposer, setShowComposer] = useState(false);
+  const [ribbonFormatTarget, setRibbonFormatTarget] = useState<HTMLDivElement | null>(null);
+  const [ribbonActionTarget, setRibbonActionTarget] = useState<HTMLDivElement | null>(null);
+  const [ribbonInsertTarget, setRibbonInsertTarget] = useState<HTMLDivElement | null>(null);
+  const [ribbonOptionsTarget, setRibbonOptionsTarget] = useState<HTMLDivElement | null>(null);
   const [composerMode, setComposerMode] = useState<'compose' | 'reply' | 'replyAll' | 'forward'>('compose');
   const [composerDraftText, setComposerDraftText] = useState("");
   const [pendingDraft, setPendingDraft] = useState<ComposerDraftData | null>(null);
@@ -4602,7 +4609,17 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     return null;
   }
 
+  const ribbonMessages = interfaceLayout !== 'ribbon' ? [] : selectedEmailKeys.size > 0
+    ? resolveSelectedEmails(useEmailStore.getState())
+    : selectedEmail ? [selectedEmail] : [];
+  const ribbonTagCounts = new Map<string, number>();
+  for (const email of ribbonMessages) {
+    const ids = new Set(Object.keys(email.keywords ?? {}).filter(key => email.keywords[key] && (key.startsWith(KEYWORD_PREFIX) || key.startsWith(KEYWORD_PREFIX_LEGACY))).map(key => key.slice(key.startsWith(KEYWORD_PREFIX) ? KEYWORD_PREFIX.length : KEYWORD_PREFIX_LEGACY.length)));
+    for (const id of ids) ribbonTagCounts.set(id, (ribbonTagCounts.get(id) ?? 0) + 1);
+  }
+
   return (
+    <RibbonComposerContext.Provider value={{ formatTarget: ribbonFormatTarget, actionTarget: ribbonActionTarget, insertTarget: ribbonInsertTarget, optionsTarget: ribbonOptionsTarget }}>
     <DragDropProvider>
       <div ref={appRootRef} className={cn("flex flex-col overflow-hidden pt-[env(safe-area-inset-top)]", mvShell ? "bg-[var(--mv-canvas)]" : "bg-background", isEmbedded ? "h-full" : "h-dvh")}>
         <AppTopBannerSlot />
@@ -4643,6 +4660,58 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
               allInboxesReachable ? () => handleMailboxSelect(UNIFIED_MAILBOX_IDS.inbox) : undefined
             }
             allInboxesSelected={allInboxesSelected}
+          />
+        )}
+        {interfaceLayout === 'ribbon' && !isMobile && !isTablet && !isEmbedded && !fullscreenReading && !inlineApp && (
+          <Ribbon
+            key={showComposer ? "compose" : "mail"}
+            composing={showComposer}
+            onFormatTarget={setRibbonFormatTarget}
+            onActionTarget={setRibbonActionTarget}
+            onInsertTarget={setRibbonInsertTarget}
+            onOptionsTarget={setRibbonOptionsTarget}
+            onReport={['sent', 'drafts', 'scheduled'].includes(mailboxes.find(box => box.id === selectedMailbox)?.role ?? '') ? undefined : keyboardHandlers.onToggleSpam}
+            reportAsNotSpam={mailboxes.find(box => box.id === selectedMailbox)?.role === 'junk'}
+            onPin={() => { if (selectedEmail) void handleTogglePinned(selectedEmail); }}
+            pinned={selectedEmail?.keywords?.['$pinned'] === true}
+            starred={selectedEmail?.keywords?.['$flagged'] === true}
+            selectedTags={Array.from(ribbonTagCounts).filter(([, count]) => count === ribbonMessages.length).map(([id]) => id)}
+            partialTags={Array.from(ribbonTagCounts).filter(([, count]) => count < ribbonMessages.length).map(([id]) => id)}
+            onToggleTag={async id => {
+              if (!client) return;
+              if (selectedEmailKeys.size > 0) {
+                try { await useEmailStore.getState().batchSetTag(client, id, ribbonTagCounts.get(id) !== ribbonMessages.length); }
+                catch { toast.error(t('notifications.error_updating')); }
+              } else if (selectedEmail) {
+                await handleSetTag(selectedEmail.id, id, emailKeyFor(selectedEmail));
+              }
+            }}
+            onSelectAll={keyboardHandlers.onSelectAll}
+            onHelp={() => setShowShortcutsModal(true)}
+            onFullscreen={() => setFullscreenReading(true)}
+            moveTargets={Array.from(buildMoveTargets(mailboxes, { currentMailboxId: selectedMailbox, ownerAccountId: resolveMoveOwnerAccountId(selectedEmail, mailboxes, selectedMailbox) }).targetIds).map(id => ({ id, name: getMailboxPath(mailboxes.find(box => box.id === id)!, mailboxes) }))}
+            onMove={async id => {
+              if (!client) return;
+              if (selectedEmailKeys.size > 0) {
+                await runBatchEmailAction(() => useEmailStore.getState().batchMoveToMailbox(client, id), {
+                  success: t('notifications.email_moved'), error: t('notifications.move_failed'),
+                });
+              } else if (selectedEmail) {
+                await handleMoveToMailbox(selectedEmail.id, id, emailKeyFor(selectedEmail));
+              }
+            }}
+            onMarkRead={keyboardHandlers.onMarkAsRead}
+            onMarkUnread={keyboardHandlers.onMarkAsUnread}
+            onToggleStar={keyboardHandlers.onToggleStar}
+            onCompose={keyboardHandlers.onCompose}
+            onReply={keyboardHandlers.onReply}
+            onReplyAll={keyboardHandlers.onReplyAll}
+            onForward={keyboardHandlers.onForward}
+            onArchive={keyboardHandlers.onArchive}
+            onDelete={keyboardHandlers.onDelete}
+            onRefresh={handleManualRefresh}
+            canRespond={!!selectedEmail && !isScheduledView && selectedEmailKeys.size === 0}
+            canOrganize={!!client && (!!selectedEmail || selectedEmailKeys.size > 0) && !isScheduledView}
           />
         )}
         <div className="flex flex-1 overflow-hidden">
@@ -5602,5 +5671,6 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
         {floatingComposer && <MvComposeWindow>{composerNode}</MvComposeWindow>}
       </div>
     </DragDropProvider>
+    </RibbonComposerContext.Provider>
   );
 }
