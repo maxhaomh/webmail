@@ -1,0 +1,28 @@
+stages:
+  - build
+
+publish-image:
+  stage: build
+  image:
+    name: moby/buildkit:rootless
+    entrypoint: [""]
+  variables:
+    BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+  before_script:
+    - |
+      : "${CI_REGISTRY_IMAGE:?Enable the GitLab Container Registry for this project}"
+      umask 077
+      export DOCKER_CONFIG="$(mktemp -d)"
+      auth="$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')"
+      printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$CI_REGISTRY" "$auth" > "$DOCKER_CONFIG/config.json"
+  script:
+    - |
+      buildctl-daemonless.sh build \
+        --frontend dockerfile.v0 \
+        --local context=. \
+        --local dockerfile=. \
+        --opt "build-arg:GIT_COMMIT=$CI_COMMIT_SHA" \
+        --opt "build-arg:BULWARK_BUILD_SEED=$CI_COMMIT_SHA" \
+        --output "type=image,name=$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA,push=true"
